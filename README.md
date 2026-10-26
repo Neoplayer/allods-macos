@@ -89,12 +89,33 @@ scripts/start-allods.sh
 7. Информация о процессах: `PsGetProcessImageFileName`, `PsGetProcessCreateTimeQuadPart`,
    `PsGetProcessSectionBaseAddress`, `PsReferenceProcessFilePointer`, `MmCopyVirtualMemory`.
 
+## Что исправлено в ntdll (Wine)
+
+`dlls/ntdll/unix/system.c`: на запрос таблиц прошивки ACPI/FIRM
+(`NtQuerySystemInformation(SystemFirmwareTableInformation)`) Wine отвечал «не реализовано».
+Теперь он отвечает правду: у Apple Silicon ACPI-таблиц нет — пустой список, а на запрос конкретной
+таблицы «не найдена», как Windows для отсутствующей таблицы. Таблицы не подделываются.
+
+## Что видит античит о машине
+
+Ничего не скрывается и не подделывается:
+- SMBIOS (Wine берёт из IOKit macOS): производитель `Apple Inc.`, модель Мака, **настоящий
+  серийный номер и UUID платформы**;
+- ACPI: таблиц нет;
+- `ntdll` экспортирует `wine_get_version`/`wine_get_host_version` — программа видит, что это Wine
+  на Darwin.
+
 Сборка и установка после правок:
 
 ```bash
 make -C ~/Games/src/build dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe
 cp ~/Games/src/build/dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x86_64-windows/
+# ntdll.so — отдельная x86_64-сборка (CrossOver работает под Rosetta), см. wine/configure-unix-command.txt
+MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/ntdll/ntdll.so
+cp ~/Games/src/build-x64/dlls/ntdll/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/
 ```
+
+Или всё сразу: `scripts/build-ntoskrnl.sh`.
 
 ## Риски
 
@@ -105,16 +126,18 @@ cp ~/Games/src/build/dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/Cr
 ## Логи
 
 - `impactdiag.log`: строка `... 150029 <код>` — отказ запуска (были `5aa`, `6`, `57`, `5`).
-  При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`: античит в процессе игры
-  запрашивает ACPI-таблицы прошивки (`SystemFirmwareTableInformation`, провайдер `ACPI`), а у
-  Apple Silicon их нет. Это проверка железа; подделывать таблицы, чтобы её пройти, — обход
-  защиты, этого здесь сознательно нет.
+  При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`. Это не ACPI (после
+  честного ответа про ACPI код остался) и не функции ядра: запись появляется до загрузки
+  `acclient64.dll`, и рядом нет ни одного сообщения Wine о нереализованной функции. Источник
+  не найден.
 
 ## Известные проблемы
 
-- Игра падает примерно через минуту в мире: `ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по
-  адресу `0x140B8CAC4`, одинаково до и после изменений в античите. Код игры зашифрован, причина
-  не установлена. wined3d рисует через OpenGL macOS, которому не хватает части расширений
+- **Игра падает при Alt+Tab** (проверено: без Alt+Tab работает, после — падение):
+  `ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по адресу `0x140B8CAC4`. Иногда перед этим
+  `wined3d_swapchain_resize_buffers: Something's still holding back buffer 0`. Не помогли:
+  обычное окно вместо окна без рамки (`gfxBorderless=0`), виртуальный рабочий стол Wine.
+  Код игры зашифрован, причина не установлена. Пока не нажимать Alt+Tab в игре. wined3d рисует через OpenGL macOS, которому не хватает части расширений
   (`GL_ARB_uniform_buffer_object`, `GL_EXT_texture_array`), и представляется GeForce 8800 GTX.
   Crash-отчёты игры: `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\`.
 - `bin_dx9\AOgame_d3d9.log` — лог DXVK, если включён.

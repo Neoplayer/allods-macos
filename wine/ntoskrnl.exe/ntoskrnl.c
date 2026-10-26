@@ -436,13 +436,18 @@ NTSTATUS WINAPI ObOpenObjectByPointer( void *obj, ULONG attr, ACCESS_STATE *acce
 
 
 static void *create_file_object( HANDLE handle );
+static void release_file_object( void *obj );
 
 static const WCHAR file_type_name[] = {'F','i','l','e',0};
 
 static struct _OBJECT_TYPE file_type = {
     file_type_name,
-    create_file_object
+    create_file_object,
+    release_file_object
 };
+
+/* marks file objects created for process images, which have no server object */
+static const char image_file_marker;
 
 POBJECT_TYPE IoFileObjectType = &file_type;
 
@@ -453,6 +458,25 @@ static void *create_file_object( HANDLE handle )
     file->Type = 5;  /* MSDN */
     file->Size = sizeof(*file);
     return file;
+}
+
+static void release_file_object( void *obj )
+{
+    FILE_OBJECT *file = obj;
+
+    if (file->FsContext2 == &image_file_marker)
+    {
+        free_kernel_object( file );
+        return;
+    }
+
+    SERVER_START_REQ( release_kernel_object )
+    {
+        req->manager  = wine_server_obj_handle( get_device_manager() );
+        req->user_ptr = wine_server_client_ptr( obj );
+        if (wine_server_call( req )) FIXME( "failed to release %p\n", obj );
+    }
+    SERVER_END_REQ;
 }
 
 DECLARE_CRITICAL_SECTION(irp_completion_cs);
@@ -2679,6 +2703,7 @@ static FILE_OBJECT *create_image_file_object( const WCHAR *path )
         return NULL;
     file->Type = 5;
     file->Size = sizeof(*file);
+    file->FsContext2 = (void *)&image_file_marker;
     file->FileName.Buffer = (WCHAR *)(file + 1);
     file->FileName.Length = len;
     file->FileName.MaximumLength = len + sizeof(WCHAR);

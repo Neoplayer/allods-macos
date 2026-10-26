@@ -21,8 +21,8 @@ fi
 
 cx_version=$(defaults read "$CX_APP/Contents/Info.plist" CFBundleShortVersionString)
 if [[ $cx_version != $EXPECTED_CX ]]; then
-    echo "CrossOver $cx_version, а готовый ntoskrnl.exe собран для $EXPECTED_CX." >&2
-    echo "Пересоберите его: scripts/build-ntoskrnl.sh (исходники нужной версии CrossOver)." >&2
+    echo "CrossOver $cx_version, а готовые ntoskrnl.exe и ntdll.so собраны для $EXPECTED_CX." >&2
+    echo "Пересоберите их: scripts/build-ntoskrnl.sh <версия> (исходники нужной версии CrossOver)." >&2
 fi
 
 echo "== Бутылка $BOTTLE"
@@ -59,6 +59,9 @@ fi
 target="$CX_COPY/lib/wine/x86_64-windows/ntoskrnl.exe"
 cp "$REPO/wine/bin/ntoskrnl.exe" "$target"
 echo "ntoskrnl.exe установлен ($(md5 -q "$target"))"
+target="$CX_COPY/lib/wine/x86_64-unix/ntdll.so"
+cp "$REPO/wine/bin/ntdll.so" "$target"
+echo "ntdll.so установлен ($(md5 -q "$target"))"
 
 echo "== Установщик VK Play GameCenter"
 if [[ ! -f $PREFIX/drive_c/users/crossover/AppData/Local/GameCenter/GameCenter.exe ]]; then

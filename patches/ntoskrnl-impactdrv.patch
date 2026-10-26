@@ -1,5 +1,5 @@
 diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
-index b3f4575..f096b0c 100644
+index b3f4575..e4acfcc 100644
 --- a/dlls/ntoskrnl.exe/ntoskrnl.c
 +++ b/dlls/ntoskrnl.exe/ntoskrnl.c
 @@ -271,8 +271,29 @@ static const POBJECT_TYPE *known_types[] =
@@ -105,7 +105,54 @@ index b3f4575..f096b0c 100644
      if (!status) *ret = obj;
      return status;
  }
-@@ -919,6 +952,15 @@ static void unload_driver( struct wine_rb_entry *entry, void *context )
+@@ -403,14 +436,19 @@ NTSTATUS WINAPI ObOpenObjectByPointer( void *obj, ULONG attr, ACCESS_STATE *acce
+ 
+ 
+ static void *create_file_object( HANDLE handle );
++static void release_file_object( void *obj );
+ 
+ static const WCHAR file_type_name[] = {'F','i','l','e',0};
+ 
+ static struct _OBJECT_TYPE file_type = {
+     file_type_name,
+-    create_file_object
++    create_file_object,
++    release_file_object
+ };
+ 
++/* marks file objects created for process images, which have no server object */
++static const char image_file_marker;
++
+ POBJECT_TYPE IoFileObjectType = &file_type;
+ 
+ static void *create_file_object( HANDLE handle )
+@@ -422,6 +460,25 @@ static void *create_file_object( HANDLE handle )
+     return file;
+ }
+ 
++static void release_file_object( void *obj )
++{
++    FILE_OBJECT *file = obj;
++
++    if (file->FsContext2 == &image_file_marker)
++    {
++        free_kernel_object( file );
++        return;
++    }
++
++    SERVER_START_REQ( release_kernel_object )
++    {
++        req->manager  = wine_server_obj_handle( get_device_manager() );
++        req->user_ptr = wine_server_client_ptr( obj );
++        if (wine_server_call( req )) FIXME( "failed to release %p\n", obj );
++    }
++    SERVER_END_REQ;
++}
++
+ DECLARE_CRITICAL_SECTION(irp_completion_cs);
+ 
+ static void free_dispatch_irp( struct irp_data *irp_data )
+@@ -919,6 +976,15 @@ static void unload_driver( struct wine_rb_entry *entry, void *context )
  
  PEPROCESS PsInitialSystemProcess = NULL;
  
@@ -121,7 +168,7 @@ index b3f4575..f096b0c 100644
  /***********************************************************************
   *           wine_ntoskrnl_main_loop   (Not a Windows API)
   */
-@@ -934,6 +976,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+@@ -934,6 +1000,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
      PsInitialSystemProcess = IoGetCurrentProcess();
      request_thread = GetCurrentThreadId();
  
@@ -129,7 +176,7 @@ index b3f4575..f096b0c 100644
      pnp_manager_start();
  
      handles[0] = stop_event;
-@@ -1025,6 +1068,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+@@ -1025,6 +1092,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
          {
          case STATUS_SUCCESS:
              assert( context.params.type != IRP_CALL_NONE && context.params.type < ARRAY_SIZE(dispatch_funcs) );
@@ -137,7 +184,7 @@ index b3f4575..f096b0c 100644
              status = dispatch_funcs[context.params.type]( &context );
              if (!context.in_buff) context.in_size = 4096;
              break;
-@@ -2521,6 +2565,486 @@ HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
+@@ -2521,6 +2589,487 @@ HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
      return id;
  }
  
@@ -255,6 +302,7 @@ index b3f4575..f096b0c 100644
 +        return NULL;
 +    file->Type = 5;
 +    file->Size = sizeof(*file);
++    file->FsContext2 = (void *)&image_file_marker;
 +    file->FileName.Buffer = (WCHAR *)(file + 1);
 +    file->FileName.Length = len;
 +    file->FileName.MaximumLength = len + sizeof(WCHAR);
@@ -624,7 +672,7 @@ index b3f4575..f096b0c 100644
  static void *create_thread_object( HANDLE handle )
  {
      THREAD_BASIC_INFORMATION info;
-@@ -2565,16 +3089,31 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
+@@ -2565,16 +3114,31 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
  {
      struct _KTHREAD *thread = NtCurrentTeb()->Instrumentation[1];
  
@@ -659,7 +707,7 @@ index b3f4575..f096b0c 100644
  
          NtCurrentTeb()->Instrumentation[1] = thread;
      }
-@@ -2867,6 +3406,17 @@ PVOID WINAPI MmAllocateContiguousMemorySpecifyCache( SIZE_T size,
+@@ -2867,6 +3431,17 @@ PVOID WINAPI MmAllocateContiguousMemorySpecifyCache( SIZE_T size,
  /***********************************************************************
   *           MmAllocatePagesForMdl   (NTOSKRNL.EXE.@)
   */
@@ -677,7 +725,7 @@ index b3f4575..f096b0c 100644
  PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS highaddress,
                                    PHYSICAL_ADDRESS skipbytes, SIZE_T size)
  {
-@@ -2880,7 +3430,11 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
+@@ -2880,7 +3455,11 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
   */
  void WINAPI MmBuildMdlForNonPagedPool(MDL *mdl)
  {
@@ -690,7 +738,7 @@ index b3f4575..f096b0c 100644
  }
  
  /***********************************************************************
-@@ -2904,6 +3458,21 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
+@@ -2904,6 +3483,21 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
      VirtualFree( addr, 0, MEM_RELEASE );
  }
  
@@ -712,7 +760,7 @@ index b3f4575..f096b0c 100644
  /***********************************************************************
   *           MmIsAddressValid   (NTOSKRNL.EXE.@)
   *
-@@ -2970,9 +3539,12 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
+@@ -2970,9 +3564,12 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
  PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, MEMORY_CACHING_TYPE CacheType,
                                             PVOID BaseAddress, ULONG BugCheckOnFailure, MM_PAGE_PRIORITY Priority)
  {
@@ -727,7 +775,7 @@ index b3f4575..f096b0c 100644
  }
  
  /***********************************************************************
-@@ -2980,7 +3552,13 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
+@@ -2980,7 +3577,13 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
   */
  void WINAPI MmUnmapLockedPages( void *base, MDL *mdl )
  {
@@ -742,7 +790,7 @@ index b3f4575..f096b0c 100644
  }
  
  /***********************************************************************
-@@ -3006,7 +3584,21 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
+@@ -3006,7 +3609,21 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
   */
  void WINAPI MmProbeAndLockPages(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, LOCK_OPERATION Operation)
  {
@@ -765,7 +813,7 @@ index b3f4575..f096b0c 100644
  }
  
  
-@@ -3024,7 +3616,9 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
+@@ -3024,7 +3641,9 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
   */
  void WINAPI  MmUnlockPages(PMDLX MemoryDescriptorList)
  {
@@ -776,7 +824,7 @@ index b3f4575..f096b0c 100644
  }
  
  
-@@ -3262,44 +3856,173 @@ BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_ST
+@@ -3262,44 +3881,173 @@ BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_ST
  }
  
  
@@ -926,8 +974,8 @@ index b3f4575..f096b0c 100644
 -    return STATUS_SUCCESS;
 +    TRACE( "%p\n", token );
 +    if (token) ObDereferenceObject( token );
-+}
-+
+ }
+ 
 +/***********************************************************************
 + *           PsDereferenceImpersonationToken   (NTOSKRNL.EXE.@)
 + */
@@ -936,28 +984,28 @@ index b3f4575..f096b0c 100644
 +    TRACE( "%p\n", token );
 +    if (token) ObDereferenceObject( token );
 +}
-+
-+/***********************************************************************
-+ *           PsImpersonateClient   (NTOSKRNL.EXE.@)
-+ */
-+NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEAN CopyOnOpen,
-+                                    BOOLEAN EffectiveOnly, SECURITY_IMPERSONATION_LEVEL ImpersonationLevel)
-+{
-+    FIXME("(%p, %p, %u, %u, %u): stub\n", Thread, Token, CopyOnOpen, EffectiveOnly, ImpersonationLevel);
-+
-+    return STATUS_NOT_IMPLEMENTED;
- }
- 
  
  /***********************************************************************
 - *           PsSetCreateProcessNotifyRoutineEx   (NTOSKRNL.EXE.@)
-+ *           PsRevertToSelf   (NTOSKRNL.EXE.@)
++ *           PsImpersonateClient   (NTOSKRNL.EXE.@)
   */
 -NTSTATUS WINAPI PsSetCreateProcessNotifyRoutineEx( PCREATE_PROCESS_NOTIFY_ROUTINE_EX callback, BOOLEAN remove )
-+void WINAPI PsRevertToSelf(void)
++NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEAN CopyOnOpen,
++                                    BOOLEAN EffectiveOnly, SECURITY_IMPERSONATION_LEVEL ImpersonationLevel)
  {
 -    FIXME( "stub: %p %d\n", callback, remove );
 -    return STATUS_SUCCESS;
++    FIXME("(%p, %p, %u, %u, %u): stub\n", Thread, Token, CopyOnOpen, EffectiveOnly, ImpersonationLevel);
++
++    return STATUS_NOT_IMPLEMENTED;
++}
++
++
++/***********************************************************************
++ *           PsRevertToSelf   (NTOSKRNL.EXE.@)
++ */
++void WINAPI PsRevertToSelf(void)
++{
 +    HANDLE token = NULL;
 +
 +    TRACE( "\n" );
@@ -966,7 +1014,7 @@ index b3f4575..f096b0c 100644
  }
  
  
-@@ -3344,16 +4067,6 @@ NTSTATUS WINAPI PsRemoveLoadImageNotifyRoutine(PLOAD_IMAGE_NOTIFY_ROUTINE routin
+@@ -3344,16 +4092,6 @@ NTSTATUS WINAPI PsRemoveLoadImageNotifyRoutine(PLOAD_IMAGE_NOTIFY_ROUTINE routin
   }
  
  
@@ -983,7 +1031,7 @@ index b3f4575..f096b0c 100644
  /***********************************************************************
   *           PsTerminateSystemThread   (NTOSKRNL.EXE.@)
   */
-@@ -3500,6 +4213,34 @@ ULONG WINAPI KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER process_number)
+@@ -3500,6 +4238,34 @@ ULONG WINAPI KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER process_number)
      return cur_number;
  }
  
@@ -1018,7 +1066,7 @@ index b3f4575..f096b0c 100644
  /***********************************************************************
   *          KeQueryGroupAffinity   (NTOSKRNL.EXE.@)
   */
-@@ -4326,20 +5067,6 @@ PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
+@@ -4326,20 +5092,6 @@ PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
      return NULL;
  }
  
@@ -1039,7 +1087,7 @@ index b3f4575..f096b0c 100644
  /*********************************************************************
   *           KeEnterGuardedRegion    (NTOSKRNL.@)
   */
-@@ -4358,9 +5085,19 @@ void WINAPI KeLeaveGuardedRegion(void)
+@@ -4358,9 +5110,19 @@ void WINAPI KeLeaveGuardedRegion(void)
  
  static const WCHAR token_type_name[] = {'T','o','k','e','n',0};
  
@@ -1060,7 +1108,7 @@ index b3f4575..f096b0c 100644
  };
  
  POBJECT_TYPE SeTokenObjectType = &token_type;
-@@ -4587,36 +5324,6 @@ void WINAPI KeSignalCallDpcDone(void *barrier)
+@@ -4587,36 +5349,6 @@ void WINAPI KeSignalCallDpcDone(void *barrier)
      InterlockedDecrement((LONG *)barrier);
  }
  
@@ -1097,7 +1145,7 @@ index b3f4575..f096b0c 100644
  void WINAPI KeStackAttachProcess(KPROCESS *process, KAPC_STATE *apc_state)
  {
      FIXME("process %p, apc_state %p stub.\n", process, apc_state);
-@@ -4689,7 +5396,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -4689,7 +5421,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
      switch(reason)
      {
      case DLL_PROCESS_ATTACH:
@@ -1105,7 +1153,7 @@ index b3f4575..f096b0c 100644
  #if defined(__i386__) || defined(__x86_64__)
          handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
  #endif
-@@ -4699,6 +5405,9 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -4699,6 +5430,9 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
          dpc_call_tls_index = TlsAlloc();
          LdrRegisterDllNotification( 0, ldr_notify_callback, NULL, &ldr_notify_cookie );
          break;

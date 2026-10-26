@@ -1,6 +1,6 @@
 # Изменения в Wine (CrossOver 26.3)
 
-Меняется только `dlls/ntoskrnl.exe`. Исходники — исходники CrossOver 26.3
+Меняются `dlls/ntoskrnl.exe` и `dlls/ntdll/unix/system.c`. Исходники — исходники CrossOver 26.3
 (`https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz`,
 sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; локально `~/Games/src/cx.tar.gz`, распакованы в `~/Games/src/sources/wine`, ядро Wine 11.0).
 
@@ -11,6 +11,10 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 | `../patches/ntoskrnl-impactdrv.patch` | разница в виде патча (`git apply` в корне исходников Wine) |
 | `bin/ntoskrnl.exe` | собранный патченый модуль, который сейчас стоит в `~/Games/cx` |
 | `bin/ntoskrnl.exe.orig` | оригинальный модуль из CrossOver 26.3 |
+| `ntdll/system.c`, `ntdll/original/system.c` | изменённый и исходный `dlls/ntdll/unix/system.c` |
+| `../patches/ntdll-firmware-tables.patch` | патч ntdll (ответ про ACPI-таблицы) |
+| `bin/ntdll.so`, `bin/ntdll.so.orig` | собранная unix-часть ntdll (x86_64, macOS 10.15+) и оригинал |
+| `configure-unix-command.txt` | configure для x86_64 unix-сборки (из `~/Games/src/build-x64`) |
 | `configure-command.txt` | команда configure (из каталога `~/Games/src/build`) |
 
 ## Восстановление с нуля
@@ -20,8 +24,9 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 mkdir -p ~/Games/cx
 cp -R /Applications/CrossOver.app/Contents/SharedSupport/CrossOver ~/Games/cx/
 
-# установить готовый модуль
+# установить готовые модули
 cp wine/bin/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x86_64-windows/ntoskrnl.exe
+cp wine/bin/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/ntdll.so
 ```
 
 Пересборка из исходников:
@@ -52,7 +57,7 @@ cp dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x
 # Скрипты (`scripts/`)
 
 - `setup.sh` — подготовка Мака: бутылка, копия движка, ntoskrnl, переменные, настройки игры.
-- `build-ntoskrnl.sh [версия]` — пересборка ntoskrnl из исходников CrossOver.
+- `build-ntoskrnl.sh [версия]` — пересборка ntoskrnl.exe и ntdll.so из исходников CrossOver.
 - `start-allods.sh` — запуск GameCenter с патченым движком.
 - `run-wine-staging.sh` — обёртка Wine Staging 11.18 (пробный вариант, не используется).
 - `tools/*.swift` — мелкие утилиты окон macOS (позиция, клик, список окон), использовались при отладке.
