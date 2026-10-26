@@ -1,0 +1,1 @@
+../sources/wine/configure --enable-archs=x86_64 --without-x --without-freetype --without-gnutls --without-gstreamer --without-vulkan --without-opencl --without-pcap --without-sdl --without-usb --without-capi --without-cups --without-sane --without-krb5 --without-netapi --without-unwind --without-inotify --without-coreaudio --disable-tests

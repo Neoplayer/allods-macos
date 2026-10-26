@@ -1,0 +1,590 @@
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index b3f4575..bce4ee7 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -271,8 +271,29 @@ static const POBJECT_TYPE *known_types[] =
+ 
+ DECLARE_CRITICAL_SECTION(handle_map_cs);
+ 
++/* Drivers handle user-mode handles which belong to the process that issued the
++ * IRP, while wine runs the dispatch code in the device manager process. */
++static HANDLE duplicate_client_handle( HANDLE handle )
++{
++    THREAD_BASIC_INFORMATION info;
++    HANDLE thread, process, ret = NULL;
++
++    if (!(thread = OpenThread( THREAD_QUERY_INFORMATION, FALSE, client_tid )))
++        return NULL;
++
++    if (!NtQueryInformationThread( thread, ThreadBasicInformation, &info, sizeof(info), NULL ) &&
++        (process = OpenProcess( PROCESS_DUP_HANDLE, FALSE, HandleToUlong( info.ClientId.UniqueProcess ) )))
++    {
++        DuplicateHandle( process, handle, GetCurrentProcess(), &ret, 0, FALSE, DUPLICATE_SAME_ACCESS );
++        NtClose( process );
++    }
++    NtClose( thread );
++    return ret;
++}
++
+ NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret )
+ {
++    HANDLE client_handle = NULL;
+     void *obj;
+     NTSTATUS status;
+ 
+@@ -286,12 +307,25 @@ NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret
+         obj = wine_server_get_ptr( reply->user_ptr );
+     }
+     SERVER_END_REQ;
+-    if (status)
++
++    if (status && GetCurrentThreadId() == request_thread && client_tid &&
++        (client_handle = duplicate_client_handle( handle )))
+     {
+-        LeaveCriticalSection( &handle_map_cs );
+-        return status;
++        TRACE( "resolving handle %p in client process tid %lu\n", handle, client_tid );
++        handle = client_handle;
++
++        SERVER_START_REQ( get_kernel_object_ptr )
++        {
++            req->manager = wine_server_obj_handle( get_device_manager() );
++            req->handle  = wine_server_obj_handle( handle );
++            status = wine_server_call( req );
++            obj = wine_server_get_ptr( reply->user_ptr );
++        }
++        SERVER_END_REQ;
+     }
+ 
++    if (status) goto done;
++
+     if (!obj)
+     {
+         char buf[256];
+@@ -299,11 +333,8 @@ NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret
+         ULONG size;
+ 
+         status = NtQueryObject( handle, ObjectTypeInformation, buf, sizeof(buf), &size );
+-        if (status)
+-        {
+-            LeaveCriticalSection( &handle_map_cs );
+-            return status;
+-        }
++        if (status) goto done;
++
+         if (!type)
+         {
+             size_t i;
+@@ -317,15 +348,15 @@ NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret
+             if (i == ARRAY_SIZE(known_types))
+             {
+                 FIXME("Unsupported type %s\n", debugstr_us(&type_info->TypeName));
+-                LeaveCriticalSection( &handle_map_cs );
+-                return STATUS_INVALID_HANDLE;
++                status = STATUS_INVALID_HANDLE;
++                goto done;
+             }
+         }
+         else if (RtlCompareUnicodeStrings( type->name, lstrlenW(type->name), type_info->TypeName.Buffer,
+                                            type_info->TypeName.Length / sizeof(WCHAR), FALSE) )
+         {
+-            LeaveCriticalSection( &handle_map_cs );
+-            return STATUS_OBJECT_TYPE_MISMATCH;
++            status = STATUS_OBJECT_TYPE_MISMATCH;
++            goto done;
+         }
+ 
+         if (type->constructor)
+@@ -339,7 +370,9 @@ NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret
+     }
+     else if (type && ObGetObjectType( obj ) != type) status = STATUS_OBJECT_TYPE_MISMATCH;
+ 
++done:
+     LeaveCriticalSection( &handle_map_cs );
++    if (client_handle) NtClose( client_handle );
+     if (!status) *ret = obj;
+     return status;
+ }
+@@ -919,6 +952,15 @@ static void unload_driver( struct wine_rb_entry *entry, void *context )
+ 
+ PEPROCESS PsInitialSystemProcess = NULL;
+ 
++/* x86_64 drivers read the current thread inline from KPCR.Prcb.CurrentThread
++ * (gs:[0x188]); in user mode that offset is this TEB field */
++static void update_current_kthread(void)
++{
++#ifdef __x86_64__
++    NtCurrentTeb()->ReservedForDebuggerInstrumentation[15] = KeGetCurrentThread();
++#endif
++}
++
+ /***********************************************************************
+  *           wine_ntoskrnl_main_loop   (Not a Windows API)
+  */
+@@ -934,6 +976,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+     PsInitialSystemProcess = IoGetCurrentProcess();
+     request_thread = GetCurrentThreadId();
+ 
++    update_current_kthread();
+     pnp_manager_start();
+ 
+     handles[0] = stop_event;
+@@ -1025,6 +1068,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+         {
+         case STATUS_SUCCESS:
+             assert( context.params.type != IRP_CALL_NONE && context.params.type < ARRAY_SIZE(dispatch_funcs) );
++            update_current_kthread();
+             status = dispatch_funcs[context.params.type]( &context );
+             if (!context.in_buff) context.in_size = 4096;
+             break;
+@@ -2565,16 +2609,31 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
+ {
+     struct _KTHREAD *thread = NtCurrentTeb()->Instrumentation[1];
+ 
++    TRACE( "tid %lx, request thread %lx, client tid %lx\n",
++           GetCurrentThreadId(), request_thread, client_tid );
++
+     if (!thread)
+     {
+         HANDLE handle = GetCurrentThread();
++        NTSTATUS status;
+ 
+         /* FIXME: we shouldn't need it, GetCurrentThread() should be client thread already */
+-        if (GetCurrentThreadId() == request_thread)
+-            handle = OpenThread( MAXIMUM_ALLOWED, FALSE, client_tid );
++        if (GetCurrentThreadId() == request_thread && client_tid)
++        {
++            if (!(handle = OpenThread( THREAD_QUERY_INFORMATION, FALSE, client_tid )))
++            {
++                WARN( "failed to open client thread %lu, error %lu\n", client_tid, GetLastError() );
++                return NULL;
++            }
++        }
+ 
+-        kernel_object_from_handle( handle, PsThreadType, (void**)&thread );
++        status = kernel_object_from_handle( handle, PsThreadType, (void **)&thread );
+         if (handle != GetCurrentThread()) NtClose( handle );
++        if (status)
++        {
++            WARN( "failed to resolve current thread, status %#lx\n", status );
++            return NULL;
++        }
+ 
+         NtCurrentTeb()->Instrumentation[1] = thread;
+     }
+@@ -2867,6 +2926,17 @@ PVOID WINAPI MmAllocateContiguousMemorySpecifyCache( SIZE_T size,
+ /***********************************************************************
+  *           MmAllocatePagesForMdl   (NTOSKRNL.EXE.@)
+  */
++/* there is no physical memory to describe; use the virtual page numbers so
++ * that the PFN array is consistent with MmGetPhysicalAddress */
++static void fill_mdl_pfns( MDL *mdl )
++{
++    PFN_NUMBER *pfns = (PFN_NUMBER *)(mdl + 1);
++    ULONG_PTR page = (ULONG_PTR)mdl->StartVa >> PAGE_SHIFT;
++    SIZE_T i, count = ADDRESS_AND_SIZE_TO_SPAN_PAGES( (char *)mdl->StartVa + mdl->ByteOffset, mdl->ByteCount );
++
++    for (i = 0; i < count; i++) pfns[i] = page + i;
++}
++
+ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS highaddress,
+                                   PHYSICAL_ADDRESS skipbytes, SIZE_T size)
+ {
+@@ -2880,7 +2950,11 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
+  */
+ void WINAPI MmBuildMdlForNonPagedPool(MDL *mdl)
+ {
+-    FIXME("stub: %p\n", mdl);
++    TRACE("%p\n", mdl);
++
++    fill_mdl_pfns( mdl );
++    mdl->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
++    mdl->MappedSystemVa = (char *)mdl->StartVa + mdl->ByteOffset;
+ }
+ 
+ /***********************************************************************
+@@ -2904,6 +2978,21 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
+     VirtualFree( addr, 0, MEM_RELEASE );
+ }
+ 
++/***********************************************************************
++ *           KeStallExecutionProcessor   (NTOSKRNL.EXE.@)
++ */
++void WINAPI KeStallExecutionProcessor( ULONG us )
++{
++    LARGE_INTEGER freq, start, now;
++
++    TRACE( "%lu\n", us );
++
++    QueryPerformanceFrequency( &freq );
++    QueryPerformanceCounter( &start );
++    do QueryPerformanceCounter( &now );
++    while ((now.QuadPart - start.QuadPart) * 1000000 / freq.QuadPart < us);
++}
++
+ /***********************************************************************
+  *           MmIsAddressValid   (NTOSKRNL.EXE.@)
+  *
+@@ -2970,9 +3059,12 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
+ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, MEMORY_CACHING_TYPE CacheType,
+                                            PVOID BaseAddress, ULONG BugCheckOnFailure, MM_PAGE_PRIORITY Priority)
+ {
+-    FIXME("(%p, %u, %u, %p, %lu, %u): stub\n", MemoryDescriptorList, AccessMode, CacheType, BaseAddress, BugCheckOnFailure, Priority);
++    TRACE("(%p, %u, %u, %p, %lu, %u)\n", MemoryDescriptorList, AccessMode, CacheType, BaseAddress, BugCheckOnFailure, Priority);
+ 
+-    return NULL;
++    /* drivers and their clients share one address space here, so the
++     * locked pages are already visible at their original address */
++    if (BaseAddress) FIXME("requested base address %p ignored\n", BaseAddress);
++    return MmMapLockedPages( MemoryDescriptorList, AccessMode );
+ }
+ 
+ /***********************************************************************
+@@ -2980,7 +3072,13 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
+  */
+ void WINAPI MmUnmapLockedPages( void *base, MDL *mdl )
+ {
+-    FIXME( "(%p %p_\n", base, mdl );
++    TRACE( "(%p %p)\n", base, mdl );
++
++    if (base == mdl->MappedSystemVa)
++    {
++        mdl->MdlFlags &= ~MDL_MAPPED_TO_SYSTEM_VA;
++        mdl->MappedSystemVa = NULL;
++    }
+ }
+ 
+ /***********************************************************************
+@@ -3006,7 +3104,21 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
+  */
+ void WINAPI MmProbeAndLockPages(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, LOCK_OPERATION Operation)
+ {
+-    FIXME("(%p, %u, %u): stub\n", MemoryDescriptorList, AccessMode, Operation);
++    MDL *mdl = MemoryDescriptorList;
++    char *va = (char *)mdl->StartVa + mdl->ByteOffset;
++
++    TRACE("(%p, %u, %u)\n", mdl, AccessMode, Operation);
++
++    if (mdl->ByteCount)
++    {
++        if (Operation == IoReadAccess ? IsBadReadPtr( va, mdl->ByteCount )
++                                      : IsBadWritePtr( va, mdl->ByteCount ))
++            RtlRaiseStatus( STATUS_ACCESS_VIOLATION );
++    }
++
++    fill_mdl_pfns( mdl );
++    mdl->MdlFlags |= MDL_PAGES_LOCKED;
++    if (Operation != IoReadAccess) mdl->MdlFlags |= MDL_WRITE_OPERATION;
+ }
+ 
+ 
+@@ -3024,7 +3136,9 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
+  */
+ void WINAPI  MmUnlockPages(PMDLX MemoryDescriptorList)
+ {
+-    FIXME("(%p): stub\n", MemoryDescriptorList);
++    TRACE("(%p)\n", MemoryDescriptorList);
++
++    MemoryDescriptorList->MdlFlags &= ~(MDL_PAGES_LOCKED | MDL_WRITE_OPERATION);
+ }
+ 
+ 
+@@ -3262,6 +3376,151 @@ BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_ST
+ }
+ 
+ 
++struct _SECURITY_CLIENT_CONTEXT
++{
++    SECURITY_QUALITY_OF_SERVICE SecurityQos;
++    PACCESS_TOKEN ClientToken;
++    BOOLEAN DirectlyAccessClientToken;
++    BOOLEAN DirectAccessEffectiveOnly;
++    BOOLEAN ServerIsRemote;
++    TOKEN_CONTROL ClientTokenControl;
++};
++
++/* the server can't map tokens to kernel objects, so keep our own handle */
++struct client_token
++{
++    HANDLE handle;
++};
++
++/* duplicate the effective token of a client thread as an impersonation token */
++static NTSTATUS open_client_token( PETHREAD client_thread, const SECURITY_QUALITY_OF_SERVICE *qos, HANDLE *ret )
++{
++    SECURITY_QUALITY_OF_SERVICE token_qos = *qos;
++    OBJECT_ATTRIBUTES attr;
++    HANDLE thread, process, token;
++    NTSTATUS status;
++
++    if (!(thread = OpenThread( THREAD_QUERY_INFORMATION, FALSE, HandleToUlong( client_thread->kthread.id.UniqueThread ) )))
++        return STATUS_INVALID_PARAMETER;
++    status = NtOpenThreadToken( thread, TOKEN_DUPLICATE | TOKEN_QUERY, TRUE, &token );
++    NtClose( thread );
++
++    if (status == STATUS_NO_TOKEN)
++    {
++        if (!(process = OpenProcess( PROCESS_QUERY_INFORMATION, FALSE,
++                                     HandleToUlong( client_thread->kthread.id.UniqueProcess ) )))
++            return STATUS_INVALID_PARAMETER;
++        status = NtOpenProcessToken( process, TOKEN_DUPLICATE | TOKEN_QUERY, &token );
++        NtClose( process );
++    }
++    if (status) return status;
++
++    token_qos.Length = sizeof(token_qos);
++    InitializeObjectAttributes( &attr, NULL, 0, NULL, NULL );
++    attr.SecurityQualityOfService = &token_qos;
++    status = NtDuplicateToken( token, TOKEN_ALL_ACCESS, &attr, qos->EffectiveOnly, TokenImpersonation, ret );
++    NtClose( token );
++    return status;
++}
++
++/***********************************************************************
++ *           SeCreateClientSecurity   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI SeCreateClientSecurity( PETHREAD client_thread, SECURITY_QUALITY_OF_SERVICE *qos,
++                                        BOOLEAN remote_session, struct _SECURITY_CLIENT_CONTEXT *context )
++{
++    struct client_token *client_token;
++    HANDLE token;
++    NTSTATUS status;
++
++    TRACE( "thread %p, qos %p, remote %u, context %p\n", client_thread, qos, remote_session, context );
++
++    if (!client_thread || !qos || !context) return STATUS_INVALID_PARAMETER;
++
++    if ((status = open_client_token( client_thread, qos, &token ))) return status;
++    if (!(client_token = alloc_kernel_object( SeTokenObjectType, NULL, sizeof(*client_token), 1 )))
++    {
++        NtClose( token );
++        return STATUS_NO_MEMORY;
++    }
++    client_token->handle = token;
++    context->ClientToken = client_token;
++
++    context->SecurityQos = *qos;
++    context->DirectlyAccessClientToken = FALSE;
++    context->DirectAccessEffectiveOnly = qos->EffectiveOnly;
++    context->ServerIsRemote = remote_session;
++    memset( &context->ClientTokenControl, 0, sizeof(context->ClientTokenControl) );
++
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           SeImpersonateClientEx   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI SeImpersonateClientEx( struct _SECURITY_CLIENT_CONTEXT *context, PETHREAD server_thread )
++{
++    struct client_token *client_token = context->ClientToken;
++    HANDLE thread = GetCurrentThread();
++    NTSTATUS status;
++
++    TRACE( "context %p, thread %p\n", context, server_thread );
++
++    if (!client_token || ObGetObjectType( client_token ) != SeTokenObjectType) return STATUS_INVALID_PARAMETER;
++
++    if (server_thread && !(thread = OpenThread( THREAD_SET_THREAD_TOKEN, FALSE,
++                                                HandleToUlong( server_thread->kthread.id.UniqueThread ) )))
++        status = STATUS_INVALID_PARAMETER;
++    else
++        status = NtSetInformationThread( thread, ThreadImpersonationToken,
++                                         &client_token->handle, sizeof(client_token->handle) );
++
++    if (thread && thread != GetCurrentThread()) NtClose( thread );
++    return status;
++}
++
++/***********************************************************************
++ *           SeImpersonateClient   (NTOSKRNL.EXE.@)
++ */
++void WINAPI SeImpersonateClient( struct _SECURITY_CLIENT_CONTEXT *context, PETHREAD server_thread )
++{
++    SeImpersonateClientEx( context, server_thread );
++}
++
++/***********************************************************************
++ *           SeTokenType   (NTOSKRNL.EXE.@)
++ */
++TOKEN_TYPE WINAPI SeTokenType( PACCESS_TOKEN token )
++{
++    struct client_token *client_token = token;
++    TOKEN_TYPE type = TokenPrimary;
++    ULONG size;
++
++    TRACE( "%p\n", token );
++
++    if (client_token && ObGetObjectType( client_token ) == SeTokenObjectType)
++        NtQueryInformationToken( client_token->handle, TokenType, &type, sizeof(type), &size );
++    return type;
++}
++
++/***********************************************************************
++ *           PsDereferencePrimaryToken   (NTOSKRNL.EXE.@)
++ */
++void WINAPI PsDereferencePrimaryToken( PACCESS_TOKEN token )
++{
++    TRACE( "%p\n", token );
++    if (token) ObDereferenceObject( token );
++}
++
++/***********************************************************************
++ *           PsDereferenceImpersonationToken   (NTOSKRNL.EXE.@)
++ */
++void WINAPI PsDereferenceImpersonationToken( PACCESS_TOKEN token )
++{
++    TRACE( "%p\n", token );
++    if (token) ObDereferenceObject( token );
++}
++
+ /***********************************************************************
+  *           PsImpersonateClient   (NTOSKRNL.EXE.@)
+  */
+@@ -3279,7 +3538,11 @@ NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEA
+  */
+ void WINAPI PsRevertToSelf(void)
+ {
+-    FIXME("\n");
++    HANDLE token = NULL;
++
++    TRACE( "\n" );
++
++    NtSetInformationThread( GetCurrentThread(), ThreadImpersonationToken, &token, sizeof(token) );
+ }
+ 
+ 
+@@ -3500,6 +3763,34 @@ ULONG WINAPI KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER process_number)
+     return cur_number;
+ }
+ 
++/***********************************************************************
++ *          KeGetProcessorNumberFromIndex   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI KeGetProcessorNumberFromIndex( ULONG index, PPROCESSOR_NUMBER number )
++{
++    USHORT group, group_count = GetActiveProcessorGroupCount();
++
++    TRACE( "%lu, %p\n", index, number );
++
++    if (!number) return STATUS_INVALID_PARAMETER;
++
++    for (group = 0; group < group_count; group++)
++    {
++        ULONG count = GetActiveProcessorCount( group );
++
++        if (index < count)
++        {
++            number->Group = group;
++            number->Number = index;
++            number->Reserved = 0;
++            return STATUS_SUCCESS;
++        }
++        index -= count;
++    }
++
++    return STATUS_INVALID_PARAMETER;
++}
++
+ /***********************************************************************
+  *          KeQueryGroupAffinity   (NTOSKRNL.EXE.@)
+  */
+@@ -4358,9 +4649,19 @@ void WINAPI KeLeaveGuardedRegion(void)
+ 
+ static const WCHAR token_type_name[] = {'T','o','k','e','n',0};
+ 
++static void release_token( void *obj )
++{
++    struct client_token *token = obj;
++
++    NtClose( token->handle );
++    free_kernel_object( token );
++}
++
+ static struct _OBJECT_TYPE token_type =
+ {
+-    token_type_name
++    token_type_name,
++    NULL,
++    release_token
+ };
+ 
+ POBJECT_TYPE SeTokenObjectType = &token_type;
+@@ -4689,7 +4990,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+     switch(reason)
+     {
+     case DLL_PROCESS_ATTACH:
+-        DisableThreadLibraryCalls( inst );
+ #if defined(__i386__) || defined(__x86_64__)
+         handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
+ #endif
+@@ -4699,6 +4999,9 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+         dpc_call_tls_index = TlsAlloc();
+         LdrRegisterDllNotification( 0, ldr_notify_callback, NULL, &ldr_notify_cookie );
+         break;
++    case DLL_THREAD_ATTACH:
++        update_current_kthread();
++        break;
+     case DLL_PROCESS_DETACH:
+         LdrUnregisterDllNotification( ldr_notify_cookie );
+ 
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 4426e50..f7c86d6 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -562,6 +562,7 @@
+ @ stdcall KeFlushQueuedDpcs()
+ @ stdcall KeGetCurrentProcessorNumber() NtGetCurrentProcessorNumber
+ @ stdcall KeGetCurrentProcessorNumberEx(ptr)
++@ stdcall KeGetProcessorNumberFromIndex(long ptr)
+ @ stdcall KeGetCurrentThread()
+ @ stub KeGetPreviousMode
+ @ stub KeGetRecommendedSharedDataAlignment
+@@ -664,6 +665,7 @@
+ @ stdcall KeSetTargetProcessorDpcEx(ptr ptr)
+ @ stub KeSetTimeIncrement
+ @ stdcall KeSetTimer(ptr int64 ptr)
++@ stdcall KeStallExecutionProcessor(long)
+ @ stdcall KeSetTimerEx(ptr int64 long ptr)
+ @ stdcall KeStackAttachProcess(ptr ptr)
+ @ stub KeSynchronizeExecution
+@@ -901,8 +903,8 @@
+ @ stub PsChargeProcessPoolQuota
+ @ stub PsCreateSystemProcess
+ @ stdcall PsCreateSystemThread(ptr long ptr long ptr ptr ptr)
+-@ stub PsDereferenceImpersonationToken
+-@ stub PsDereferencePrimaryToken
++@ stdcall PsDereferenceImpersonationToken(ptr)
++@ stdcall PsDereferencePrimaryToken(ptr)
+ @ stub PsDisableImpersonation
+ @ stub PsEstablishWin32Callouts
+ @ stub PsGetContextThread
+@@ -1343,7 +1345,7 @@
+ @ stub SeCaptureSubjectContext
+ @ stub SeCloseObjectAuditAlarm
+ @ stub SeCreateAccessState
+-@ stub SeCreateClientSecurity
++@ stdcall SeCreateClientSecurity(ptr ptr long ptr)
+ @ stub SeCreateClientSecurityFromSubjectContext
+ @ stub SeDeassignSecurity
+ @ stub SeDeleteAccessState
+@@ -1351,8 +1353,8 @@
+ @ stub SeExports
+ @ stub SeFilterToken
+ @ stub SeFreePrivileges
+-@ stub SeImpersonateClient
+-@ stub SeImpersonateClientEx
++@ stdcall SeImpersonateClient(ptr ptr)
++@ stdcall SeImpersonateClientEx(ptr ptr)
+ @ stdcall SeLocateProcessImageName(ptr ptr)
+ @ stub SeLockSubjectContext
+ @ stub SeMarkLogonSessionForTerminationNotification
+@@ -1378,7 +1380,7 @@
+ @ stub SeTokenIsRestricted
+ @ stub SeTokenIsWriteRestricted
+ @ extern SeTokenObjectType
+-@ stub SeTokenType
++@ stdcall SeTokenType(ptr)
+ @ stub SeUnlockSubjectContext
+ @ stub SeUnregisterLogonSessionTerminatedRoutine
+ @ stub SeValidSecurityDescriptor
