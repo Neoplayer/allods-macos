@@ -1,5 +1,5 @@
 diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
-index b3f4575..bce4ee7 100644
+index b3f4575..f096b0c 100644
 --- a/dlls/ntoskrnl.exe/ntoskrnl.c
 +++ b/dlls/ntoskrnl.exe/ntoskrnl.c
 @@ -271,8 +271,29 @@ static const POBJECT_TYPE *known_types[] =
@@ -137,7 +137,494 @@ index b3f4575..bce4ee7 100644
              status = dispatch_funcs[context.params.type]( &context );
              if (!context.in_buff) context.in_size = 4096;
              break;
-@@ -2565,16 +2609,31 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
+@@ -2521,6 +2565,486 @@ HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
+     return id;
+ }
+ 
++static HANDLE open_process_handle( PEPROCESS process, ACCESS_MASK access )
++{
++    DWORD pid = HandleToUlong( (HANDLE)process->info.UniqueProcessId );
++
++    if (pid == GetCurrentProcessId()) return GetCurrentProcess();
++    return OpenProcess( access, FALSE, pid );
++}
++
++static void close_process_handle( HANDLE handle )
++{
++    if (handle && handle != GetCurrentProcess()) NtClose( handle );
++}
++
++/* returns the Win32 image path of a process, allocated from the process heap */
++static WCHAR *get_process_image_path( PEPROCESS process )
++{
++    UNICODE_STRING *name;
++    ULONG size = sizeof(*name) + MAX_PATH * sizeof(WCHAR);
++    WCHAR *ret = NULL;
++    HANDLE handle;
++
++    NTSTATUS status = STATUS_NO_MEMORY;
++
++    if (!(handle = open_process_handle( process, PROCESS_QUERY_LIMITED_INFORMATION )))
++    {
++        WARN( "failed to open process %p, error %lu\n", (HANDLE)process->info.UniqueProcessId, GetLastError() );
++        return NULL;
++    }
++    if ((name = HeapAlloc( GetProcessHeap(), 0, size )) &&
++        !(status = NtQueryInformationProcess( handle, ProcessImageFileNameWin32, name, size, NULL )) &&
++        name->Length && (ret = HeapAlloc( GetProcessHeap(), 0, name->Length + sizeof(WCHAR) )))
++    {
++        memcpy( ret, name->Buffer, name->Length );
++        ret[name->Length / sizeof(WCHAR)] = 0;
++    }
++    if (!ret) TRACE( "no image name for process %p yet, status %#lx\n", (HANDLE)process->info.UniqueProcessId, status );
++    HeapFree( GetProcessHeap(), 0, name );
++    close_process_handle( handle );
++    return ret;
++}
++
++/*********************************************************************
++ *           PsGetProcessImageFileName  (NTOSKRNL.@)
++ */
++UCHAR * WINAPI PsGetProcessImageFileName( PEPROCESS process )
++{
++    TRACE( "%p\n", process );
++
++    if (!process->image_name[0])
++    {
++        WCHAR *path, *name;
++
++        if (!(path = get_process_image_path( process ))) return (UCHAR *)process->image_name;
++        name = wcsrchr( path, '\\' ) ? wcsrchr( path, '\\' ) + 1 : path;
++        /* the kernel keeps only the first 15 characters */
++        WideCharToMultiByte( CP_ACP, 0, name, -1, process->image_name, sizeof(process->image_name), NULL, NULL );
++        process->image_name[sizeof(process->image_name) - 1] = 0;
++        HeapFree( GetProcessHeap(), 0, path );
++    }
++    return (UCHAR *)process->image_name;
++}
++
++/*********************************************************************
++ *           PsGetProcessCreateTimeQuadPart  (NTOSKRNL.@)
++ */
++LONGLONG WINAPI PsGetProcessCreateTimeQuadPart( PEPROCESS process )
++{
++    KERNEL_USER_TIMES times = {{{0}}};
++    HANDLE handle;
++
++    TRACE( "%p\n", process );
++
++    if ((handle = open_process_handle( process, PROCESS_QUERY_LIMITED_INFORMATION )))
++    {
++        NtQueryInformationProcess( handle, ProcessTimes, &times, sizeof(times), NULL );
++        close_process_handle( handle );
++    }
++    return times.CreateTime.QuadPart;
++}
++
++/*********************************************************************
++ *           PsGetProcessSectionBaseAddress  (NTOSKRNL.@)
++ */
++void * WINAPI PsGetProcessSectionBaseAddress( PEPROCESS process )
++{
++    PEB *peb = process->info.PebBaseAddress;
++    void *base = NULL;
++    HANDLE handle;
++
++    TRACE( "%p\n", process );
++
++    if ((handle = open_process_handle( process, PROCESS_VM_READ )))
++    {
++        NtReadVirtualMemory( handle, &peb->ImageBaseAddress, &base, sizeof(base), NULL );
++        close_process_handle( handle );
++    }
++    return base;
++}
++
++/* file objects of process images are not backed by the server, so they carry the
++ * volume relative path only */
++static FILE_OBJECT *create_image_file_object( const WCHAR *path )
++{
++    FILE_OBJECT *file;
++    const WCHAR *name = path;
++    SIZE_T len;
++
++    if (name[0] && name[1] == ':') name += 2;
++    len = wcslen( name ) * sizeof(WCHAR);
++
++    if (!(file = alloc_kernel_object( IoFileObjectType, NULL, sizeof(*file) + len + sizeof(WCHAR), 1 )))
++        return NULL;
++    file->Type = 5;
++    file->Size = sizeof(*file);
++    file->FileName.Buffer = (WCHAR *)(file + 1);
++    file->FileName.Length = len;
++    file->FileName.MaximumLength = len + sizeof(WCHAR);
++    memcpy( file->FileName.Buffer, name, len + sizeof(WCHAR) );
++    return file;
++}
++
++/***********************************************************************
++ *           PsReferenceProcessFilePointer  (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI PsReferenceProcessFilePointer( PEPROCESS process, FILE_OBJECT **file )
++{
++    WCHAR *path;
++
++    TRACE( "%p %p\n", process, file );
++
++    if (!(path = get_process_image_path( process ))) return STATUS_UNSUCCESSFUL;
++    *file = create_image_file_object( path );
++    HeapFree( GetProcessHeap(), 0, path );
++    return *file ? STATUS_SUCCESS : STATUS_NO_MEMORY;
++}
++
++/*********************************************************************
++ *           MmCopyVirtualMemory    (NTOSKRNL.@)
++ */
++NTSTATUS WINAPI MmCopyVirtualMemory( PEPROCESS fromprocess, void *fromaddress, PEPROCESS toprocess,
++                                     void *toaddress, SIZE_T bufsize, KPROCESSOR_MODE mode,
++                                     SIZE_T *copied )
++{
++    HANDLE from, to = NULL;
++    NTSTATUS status = STATUS_SUCCESS;
++    SIZE_T done = 0, chunk, size;
++    char *buffer = NULL;
++
++    TRACE( "fromprocess %p, fromaddress %p, toprocess %p, toaddress %p, bufsize %Iu, mode %d, copied %p\n",
++           fromprocess, fromaddress, toprocess, toaddress, bufsize, mode, copied );
++
++    *copied = 0;
++    if (!(from = open_process_handle( fromprocess, PROCESS_VM_READ )) ||
++        !(to = open_process_handle( toprocess, PROCESS_VM_WRITE | PROCESS_VM_OPERATION )))
++    {
++        status = STATUS_ACCESS_DENIED;
++        goto done;
++    }
++    if (!(buffer = HeapAlloc( GetProcessHeap(), 0, min( bufsize, 0x10000 ) )))
++    {
++        status = STATUS_NO_MEMORY;
++        goto done;
++    }
++
++    while (done < bufsize)
++    {
++        chunk = min( bufsize - done, 0x10000 );
++        size = 0;
++        NtReadVirtualMemory( from, (char *)fromaddress + done, buffer, chunk, &size );
++        if (size) NtWriteVirtualMemory( to, (char *)toaddress + done, buffer, size, &size );
++        done += size;
++        if (size < chunk)
++        {
++            status = STATUS_PARTIAL_COPY;
++            break;
++        }
++    }
++    *copied = done;
++
++done:
++    HeapFree( GetProcessHeap(), 0, buffer );
++    close_process_handle( from );
++    close_process_handle( to );
++    return status;
++}
++
++
++/* Wine has no kernel hook for process creation; the device manager watches the
++ * process list instead and reports changes shortly after they happen. */
++
++struct process_notify
++{
++    void   *routine;
++    BOOLEAN ex;
++};
++
++struct known_process
++{
++    HANDLE    pid;
++    LONGLONG  create_time;
++    PEPROCESS process;
++    BOOL      pending;  /* creation not reported yet */
++    unsigned int retries;
++};
++
++/* a new process gets its image name only after its loader starts */
++#define MAX_PROCESS_NOTIFY_RETRIES 40
++
++static struct process_notify process_notify[64];
++static unsigned int process_notify_count;
++static struct known_process *known_processes;
++static unsigned int known_process_count;
++static HANDLE process_monitor;
++DECLARE_CRITICAL_SECTION(process_notify_cs);
++
++static SYSTEM_PROCESS_INFORMATION *get_process_list(void)
++{
++    ULONG size = 0x10000;
++    void *buffer = NULL;
++    NTSTATUS status;
++
++    for (;;)
++    {
++        HeapFree( GetProcessHeap(), 0, buffer );
++        if (!(buffer = HeapAlloc( GetProcessHeap(), 0, size ))) return NULL;
++        status = NtQuerySystemInformation( SystemProcessInformation, buffer, size, &size );
++        if (status != STATUS_INFO_LENGTH_MISMATCH) break;
++        size *= 2;
++    }
++    if (status)
++    {
++        HeapFree( GetProcessHeap(), 0, buffer );
++        return NULL;
++    }
++    return buffer;
++}
++
++static SYSTEM_PROCESS_INFORMATION *next_process( SYSTEM_PROCESS_INFORMATION *spi )
++{
++    return spi->NextEntryOffset ? (SYSTEM_PROCESS_INFORMATION *)((char *)spi + spi->NextEntryOffset) : NULL;
++}
++
++static BOOL get_process_command_line( PEPROCESS process, UNICODE_STRING *str )
++{
++    PEB *peb = process->info.PebBaseAddress;
++    RTL_USER_PROCESS_PARAMETERS *params;
++    UNICODE_STRING cmdline;
++    HANDLE handle;
++    BOOL ret = FALSE;
++
++    if (!(handle = open_process_handle( process, PROCESS_VM_READ ))) return FALSE;
++    if (!NtReadVirtualMemory( handle, &peb->ProcessParameters, &params, sizeof(params), NULL ) &&
++        !NtReadVirtualMemory( handle, &params->CommandLine, &cmdline, sizeof(cmdline), NULL ) &&
++        (str->Buffer = HeapAlloc( GetProcessHeap(), 0, cmdline.Length + sizeof(WCHAR) )) &&
++        !NtReadVirtualMemory( handle, cmdline.Buffer, str->Buffer, cmdline.Length, NULL ))
++    {
++        str->Length = cmdline.Length;
++        str->MaximumLength = cmdline.Length + sizeof(WCHAR);
++        str->Buffer[cmdline.Length / sizeof(WCHAR)] = 0;
++        ret = TRUE;
++    }
++    close_process_handle( handle );
++    return ret;
++}
++
++static void notify_process_created( SYSTEM_PROCESS_INFORMATION *spi, PEPROCESS process, const WCHAR *path,
++                                    const struct process_notify *notify, unsigned int count )
++{
++    UNICODE_STRING image = {0}, cmdline = {0};
++    PS_CREATE_NOTIFY_INFO info;
++    WCHAR *name = NULL;
++    unsigned int i;
++
++    memset( &info, 0, sizeof(info) );
++    info.Size = sizeof(info);
++    info.ParentProcessId = spi->ParentProcessId;
++    info.CreatingThreadId.UniqueProcess = spi->ParentProcessId;
++    if (path)
++        RtlDosPathNameToNtPathName_U( path, &image, NULL, NULL );
++    else if ((name = HeapAlloc( GetProcessHeap(), 0, spi->ProcessName.Length + sizeof(WCHAR) )))
++    {
++        memcpy( name, spi->ProcessName.Buffer, spi->ProcessName.Length );
++        name[spi->ProcessName.Length / sizeof(WCHAR)] = 0;
++        RtlCreateUnicodeString( &image, name );
++        path = name;
++    }
++    if (path && (info.FileObject = create_image_file_object( path ))) info.FileOpenNameAvailable = 1;
++    get_process_command_line( process, &cmdline );
++    info.ImageFileName = image.Buffer ? &image : NULL;
++    info.CommandLine = cmdline.Buffer ? &cmdline : NULL;
++
++    TRACE( "process %p, pid %p, parent %p, image %s\n", process, spi->UniqueProcessId,
++           spi->ParentProcessId, debugstr_us(&image) );
++
++    for (i = 0; i < count; i++)
++    {
++        if (notify[i].ex)
++            ((PCREATE_PROCESS_NOTIFY_ROUTINE_EX)notify[i].routine)( process, spi->UniqueProcessId, &info );
++        else
++            ((PCREATE_PROCESS_NOTIFY_ROUTINE)notify[i].routine)( spi->ParentProcessId, spi->UniqueProcessId, TRUE );
++    }
++
++    if (info.FileObject) ObDereferenceObject( info.FileObject );
++    RtlFreeUnicodeString( &image );
++    HeapFree( GetProcessHeap(), 0, cmdline.Buffer );
++    HeapFree( GetProcessHeap(), 0, name );
++}
++
++static void notify_process_exited( struct known_process *known, const struct process_notify *notify,
++                                   unsigned int count )
++{
++    unsigned int i;
++
++    TRACE( "process %p, pid %p\n", known->process, known->pid );
++
++    for (i = 0; i < count; i++)
++    {
++        if (notify[i].ex)
++        {
++            if (known->process)
++                ((PCREATE_PROCESS_NOTIFY_ROUTINE_EX)notify[i].routine)( known->process, known->pid, NULL );
++        }
++        else
++        {
++            HANDLE parent = known->process ? (HANDLE)known->process->info.InheritedFromUniqueProcessId : 0;
++            ((PCREATE_PROCESS_NOTIFY_ROUTINE)notify[i].routine)( parent, known->pid, FALSE );
++        }
++    }
++}
++
++static struct known_process *find_known_process( struct known_process *list, unsigned int count,
++                                                 HANDLE pid, LONGLONG create_time )
++{
++    unsigned int i;
++
++    for (i = 0; i < count; i++)
++        if (list[i].pid == pid && list[i].create_time == create_time) return &list[i];
++    return NULL;
++}
++
++/* compares the process list with the previous one and sends notifications,
++ * process_notify_cs is not held while drivers are called */
++static void update_process_list( BOOL notify )
++{
++    struct process_notify routines[ARRAY_SIZE(process_notify)];
++    SYSTEM_PROCESS_INFORMATION *list, *spi;
++    struct known_process *known, *old;
++    unsigned int count = 0, i, routine_count, old_count;
++
++    if (!(list = get_process_list())) return;
++    for (spi = list; spi; spi = next_process( spi )) count++;
++    if (!(known = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, count * sizeof(*known) )))
++    {
++        HeapFree( GetProcessHeap(), 0, list );
++        return;
++    }
++
++    EnterCriticalSection( &process_notify_cs );
++    routine_count = process_notify_count;
++    memcpy( routines, process_notify, routine_count * sizeof(*routines) );
++    old = known_processes;
++    old_count = known_process_count;
++    LeaveCriticalSection( &process_notify_cs );
++
++    for (spi = list, i = 0; spi; spi = next_process( spi ), i++)
++    {
++        struct known_process *prev;
++        WCHAR *path;
++
++        known[i].pid = spi->UniqueProcessId;
++        known[i].create_time = spi->CreationTime.QuadPart;
++        if ((prev = find_known_process( old, old_count, known[i].pid, known[i].create_time )))
++        {
++            known[i].process = prev->process;
++            known[i].pending = prev->pending;
++            known[i].retries = prev->retries + 1;
++            prev->process = NULL;
++            if (!known[i].pending) continue;
++        }
++        else if (!spi->UniqueProcessId || PsLookupProcessByProcessId( spi->UniqueProcessId, &known[i].process ))
++            known[i].process = NULL;
++
++        if (!notify || !known[i].process) continue;
++
++        path = get_process_image_path( known[i].process );
++        if (!path && known[i].retries < MAX_PROCESS_NOTIFY_RETRIES)
++        {
++            known[i].pending = TRUE;
++            continue;
++        }
++        known[i].pending = FALSE;
++        notify_process_created( spi, known[i].process, path, routines, routine_count );
++        HeapFree( GetProcessHeap(), 0, path );
++    }
++
++    for (i = 0; i < old_count; i++)
++    {
++        if (!old[i].process) continue;
++        if (notify && !old[i].pending) notify_process_exited( &old[i], routines, routine_count );
++        ObDereferenceObject( old[i].process );
++    }
++
++    EnterCriticalSection( &process_notify_cs );
++    known_processes = known;
++    known_process_count = count;
++    LeaveCriticalSection( &process_notify_cs );
++
++    HeapFree( GetProcessHeap(), 0, old );
++    HeapFree( GetProcessHeap(), 0, list );
++}
++
++static DWORD CALLBACK process_monitor_proc( void *arg )
++{
++    SetThreadDescription( GetCurrentThread(), L"wine_process_monitor" );
++
++    for (;;)
++    {
++        Sleep( 50 );
++        update_process_list( TRUE );
++    }
++    return 0;
++}
++
++static NTSTATUS set_process_notify( void *routine, BOOLEAN ex, BOOLEAN remove )
++{
++    NTSTATUS status = STATUS_SUCCESS;
++    BOOL start = FALSE;
++    unsigned int i;
++
++    EnterCriticalSection( &process_notify_cs );
++    if (remove)
++    {
++        for (i = 0; i < process_notify_count; i++)
++            if (process_notify[i].routine == routine && process_notify[i].ex == ex) break;
++        if (i < process_notify_count)
++            memmove( &process_notify[i], &process_notify[i + 1],
++                     (--process_notify_count - i) * sizeof(*process_notify) );
++        else
++            status = STATUS_PROCEDURE_NOT_FOUND;
++    }
++    else if (process_notify_count == ARRAY_SIZE(process_notify))
++        status = STATUS_INVALID_PARAMETER;
++    else
++    {
++        process_notify[process_notify_count].routine = routine;
++        process_notify[process_notify_count].ex = ex;
++        process_notify_count++;
++        start = !process_monitor;
++    }
++    LeaveCriticalSection( &process_notify_cs );
++
++    if (start)
++    {
++        /* existing processes are not reported */
++        update_process_list( FALSE );
++        EnterCriticalSection( &process_notify_cs );
++        if (!process_monitor) process_monitor = CreateThread( NULL, 0, process_monitor_proc, NULL, 0, NULL );
++        LeaveCriticalSection( &process_notify_cs );
++    }
++    return status;
++}
++
++/***********************************************************************
++ *           PsSetCreateProcessNotifyRoutine   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI PsSetCreateProcessNotifyRoutine( PCREATE_PROCESS_NOTIFY_ROUTINE callback, BOOLEAN remove )
++{
++    TRACE( "%p %d\n", callback, remove );
++    return set_process_notify( callback, FALSE, remove );
++}
++
++/***********************************************************************
++ *           PsSetCreateProcessNotifyRoutineEx   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI PsSetCreateProcessNotifyRoutineEx( PCREATE_PROCESS_NOTIFY_ROUTINE_EX callback, BOOLEAN remove )
++{
++    TRACE( "%p %d\n", callback, remove );
++    return set_process_notify( callback, TRUE, remove );
++}
++
+ static void *create_thread_object( HANDLE handle )
+ {
+     THREAD_BASIC_INFORMATION info;
+@@ -2565,16 +3089,31 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
  {
      struct _KTHREAD *thread = NtCurrentTeb()->Instrumentation[1];
  
@@ -172,7 +659,7 @@ index b3f4575..bce4ee7 100644
  
          NtCurrentTeb()->Instrumentation[1] = thread;
      }
-@@ -2867,6 +2926,17 @@ PVOID WINAPI MmAllocateContiguousMemorySpecifyCache( SIZE_T size,
+@@ -2867,6 +3406,17 @@ PVOID WINAPI MmAllocateContiguousMemorySpecifyCache( SIZE_T size,
  /***********************************************************************
   *           MmAllocatePagesForMdl   (NTOSKRNL.EXE.@)
   */
@@ -190,7 +677,7 @@ index b3f4575..bce4ee7 100644
  PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS highaddress,
                                    PHYSICAL_ADDRESS skipbytes, SIZE_T size)
  {
-@@ -2880,7 +2950,11 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
+@@ -2880,7 +3430,11 @@ PMDL WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS lowaddress, PHYSICAL_ADDRESS
   */
  void WINAPI MmBuildMdlForNonPagedPool(MDL *mdl)
  {
@@ -203,7 +690,7 @@ index b3f4575..bce4ee7 100644
  }
  
  /***********************************************************************
-@@ -2904,6 +2978,21 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
+@@ -2904,6 +3458,21 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
      VirtualFree( addr, 0, MEM_RELEASE );
  }
  
@@ -225,7 +712,7 @@ index b3f4575..bce4ee7 100644
  /***********************************************************************
   *           MmIsAddressValid   (NTOSKRNL.EXE.@)
   *
-@@ -2970,9 +3059,12 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
+@@ -2970,9 +3539,12 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
  PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, MEMORY_CACHING_TYPE CacheType,
                                             PVOID BaseAddress, ULONG BugCheckOnFailure, MM_PAGE_PRIORITY Priority)
  {
@@ -240,7 +727,7 @@ index b3f4575..bce4ee7 100644
  }
  
  /***********************************************************************
-@@ -2980,7 +3072,13 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
+@@ -2980,7 +3552,13 @@ PVOID WINAPI  MmMapLockedPagesSpecifyCache(PMDLX MemoryDescriptorList, KPROCESSO
   */
  void WINAPI MmUnmapLockedPages( void *base, MDL *mdl )
  {
@@ -255,7 +742,7 @@ index b3f4575..bce4ee7 100644
  }
  
  /***********************************************************************
-@@ -3006,7 +3104,21 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
+@@ -3006,7 +3584,21 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
   */
  void WINAPI MmProbeAndLockPages(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, LOCK_OPERATION Operation)
  {
@@ -278,7 +765,7 @@ index b3f4575..bce4ee7 100644
  }
  
  
-@@ -3024,7 +3136,9 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
+@@ -3024,7 +3616,9 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
   */
  void WINAPI  MmUnlockPages(PMDLX MemoryDescriptorList)
  {
@@ -289,7 +776,7 @@ index b3f4575..bce4ee7 100644
  }
  
  
-@@ -3262,6 +3376,151 @@ BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_ST
+@@ -3262,44 +3856,173 @@ BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_ST
  }
  
  
@@ -340,16 +827,21 @@ index b3f4575..bce4ee7 100644
 +    return status;
 +}
 +
-+/***********************************************************************
+ /***********************************************************************
+- *           PsImpersonateClient   (NTOSKRNL.EXE.@)
 + *           SeCreateClientSecurity   (NTOSKRNL.EXE.@)
-+ */
+  */
+-NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEAN CopyOnOpen,
+-                                    BOOLEAN EffectiveOnly, SECURITY_IMPERSONATION_LEVEL ImpersonationLevel)
 +NTSTATUS WINAPI SeCreateClientSecurity( PETHREAD client_thread, SECURITY_QUALITY_OF_SERVICE *qos,
 +                                        BOOLEAN remote_session, struct _SECURITY_CLIENT_CONTEXT *context )
-+{
+ {
+-    FIXME("(%p, %p, %u, %u, %u): stub\n", Thread, Token, CopyOnOpen, EffectiveOnly, ImpersonationLevel);
 +    struct client_token *client_token;
 +    HANDLE token;
 +    NTSTATUS status;
-+
+ 
+-    return STATUS_NOT_IMPLEMENTED;
 +    TRACE( "thread %p, qos %p, remote %u, context %p\n", client_thread, qos, remote_session, context );
 +
 +    if (!client_thread || !qos || !context) return STATUS_INVALID_PARAMETER;
@@ -370,8 +862,8 @@ index b3f4575..bce4ee7 100644
 +    memset( &context->ClientTokenControl, 0, sizeof(context->ClientTokenControl) );
 +
 +    return STATUS_SUCCESS;
-+}
-+
+ }
+ 
 +/***********************************************************************
 + *           SeImpersonateClientEx   (NTOSKRNL.EXE.@)
 + */
@@ -395,15 +887,18 @@ index b3f4575..bce4ee7 100644
 +    if (thread && thread != GetCurrentThread()) NtClose( thread );
 +    return status;
 +}
-+
-+/***********************************************************************
+ 
+ /***********************************************************************
+- *           PsRevertToSelf   (NTOSKRNL.EXE.@)
 + *           SeImpersonateClient   (NTOSKRNL.EXE.@)
-+ */
+  */
+-void WINAPI PsRevertToSelf(void)
 +void WINAPI SeImpersonateClient( struct _SECURITY_CLIENT_CONTEXT *context, PETHREAD server_thread )
-+{
+ {
+-    FIXME("\n");
 +    SeImpersonateClientEx( context, server_thread );
-+}
-+
+ }
+ 
 +/***********************************************************************
 + *           SeTokenType   (NTOSKRNL.EXE.@)
 + */
@@ -419,12 +914,16 @@ index b3f4575..bce4ee7 100644
 +        NtQueryInformationToken( client_token->handle, TokenType, &type, sizeof(type), &size );
 +    return type;
 +}
-+
-+/***********************************************************************
+ 
+ /***********************************************************************
+- *           PsSetCreateProcessNotifyRoutine   (NTOSKRNL.EXE.@)
 + *           PsDereferencePrimaryToken   (NTOSKRNL.EXE.@)
-+ */
+  */
+-NTSTATUS WINAPI PsSetCreateProcessNotifyRoutine( PCREATE_PROCESS_NOTIFY_ROUTINE callback, BOOLEAN remove )
 +void WINAPI PsDereferencePrimaryToken( PACCESS_TOKEN token )
-+{
+ {
+-    FIXME( "stub: %p %d\n", callback, remove );
+-    return STATUS_SUCCESS;
 +    TRACE( "%p\n", token );
 +    if (token) ObDereferenceObject( token );
 +}
@@ -438,14 +937,27 @@ index b3f4575..bce4ee7 100644
 +    if (token) ObDereferenceObject( token );
 +}
 +
++/***********************************************************************
++ *           PsImpersonateClient   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEAN CopyOnOpen,
++                                    BOOLEAN EffectiveOnly, SECURITY_IMPERSONATION_LEVEL ImpersonationLevel)
++{
++    FIXME("(%p, %p, %u, %u, %u): stub\n", Thread, Token, CopyOnOpen, EffectiveOnly, ImpersonationLevel);
++
++    return STATUS_NOT_IMPLEMENTED;
+ }
+ 
+ 
  /***********************************************************************
-  *           PsImpersonateClient   (NTOSKRNL.EXE.@)
+- *           PsSetCreateProcessNotifyRoutineEx   (NTOSKRNL.EXE.@)
++ *           PsRevertToSelf   (NTOSKRNL.EXE.@)
   */
-@@ -3279,7 +3538,11 @@ NTSTATUS WINAPI PsImpersonateClient(PETHREAD Thread, PACCESS_TOKEN Token, BOOLEA
-  */
- void WINAPI PsRevertToSelf(void)
+-NTSTATUS WINAPI PsSetCreateProcessNotifyRoutineEx( PCREATE_PROCESS_NOTIFY_ROUTINE_EX callback, BOOLEAN remove )
++void WINAPI PsRevertToSelf(void)
  {
--    FIXME("\n");
+-    FIXME( "stub: %p %d\n", callback, remove );
+-    return STATUS_SUCCESS;
 +    HANDLE token = NULL;
 +
 +    TRACE( "\n" );
@@ -454,7 +966,24 @@ index b3f4575..bce4ee7 100644
  }
  
  
-@@ -3500,6 +3763,34 @@ ULONG WINAPI KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER process_number)
+@@ -3344,16 +4067,6 @@ NTSTATUS WINAPI PsRemoveLoadImageNotifyRoutine(PLOAD_IMAGE_NOTIFY_ROUTINE routin
+  }
+ 
+ 
+-/***********************************************************************
+- *           PsReferenceProcessFilePointer  (NTOSKRNL.EXE.@)
+- */
+-NTSTATUS WINAPI PsReferenceProcessFilePointer(PEPROCESS process, FILE_OBJECT **file)
+-{
+-    FIXME("%p %p\n", process, file);
+-    return STATUS_NOT_IMPLEMENTED;
+-}
+-
+-
+ /***********************************************************************
+  *           PsTerminateSystemThread   (NTOSKRNL.EXE.@)
+  */
+@@ -3500,6 +4213,34 @@ ULONG WINAPI KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER process_number)
      return cur_number;
  }
  
@@ -489,7 +1018,28 @@ index b3f4575..bce4ee7 100644
  /***********************************************************************
   *          KeQueryGroupAffinity   (NTOSKRNL.EXE.@)
   */
-@@ -4358,9 +4649,19 @@ void WINAPI KeLeaveGuardedRegion(void)
+@@ -4326,20 +5067,6 @@ PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
+     return NULL;
+ }
+ 
+-/*********************************************************************
+- *           MmCopyVirtualMemory    (NTOSKRNL.@)
+- */
+-NTSTATUS WINAPI MmCopyVirtualMemory(PEPROCESS fromprocess, void *fromaddress, PEPROCESS toprocess,
+-                                    void *toaddress, SIZE_T bufsize, KPROCESSOR_MODE mode,
+-                                    SIZE_T *copied)
+-{
+-    FIXME("fromprocess %p, fromaddress %p, toprocess %p, toaddress %p, bufsize %Iu, mode %d, copied %p stub.\n",
+-            fromprocess, fromaddress, toprocess, toaddress, bufsize, mode, copied);
+-
+-    *copied = 0;
+-    return STATUS_NOT_IMPLEMENTED;
+-}
+-
+ /*********************************************************************
+  *           KeEnterGuardedRegion    (NTOSKRNL.@)
+  */
+@@ -4358,9 +5085,19 @@ void WINAPI KeLeaveGuardedRegion(void)
  
  static const WCHAR token_type_name[] = {'T','o','k','e','n',0};
  
@@ -510,7 +1060,44 @@ index b3f4575..bce4ee7 100644
  };
  
  POBJECT_TYPE SeTokenObjectType = &token_type;
-@@ -4689,7 +4990,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -4587,36 +5324,6 @@ void WINAPI KeSignalCallDpcDone(void *barrier)
+     InterlockedDecrement((LONG *)barrier);
+ }
+ 
+-void * WINAPI PsGetProcessSectionBaseAddress(PEPROCESS process)
+-{
+-    void *image_base;
+-    NTSTATUS status;
+-    SIZE_T size;
+-    HANDLE h;
+-
+-    TRACE("process %p.\n", process);
+-
+-    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+-    {
+-        WARN("Error opening process object, status %#lx.\n", status);
+-        return NULL;
+-    }
+-
+-    status = NtReadVirtualMemory(h, &process->info.PebBaseAddress->ImageBaseAddress,
+-            &image_base, sizeof(image_base), &size);
+-
+-    NtClose(h);
+-
+-    if (status || size != sizeof(image_base))
+-    {
+-        WARN("Error reading process memory, status %#lx, size %Iu.\n", status, size);
+-        return NULL;
+-    }
+-
+-    TRACE("returning %p.\n", image_base);
+-    return image_base;
+-}
+-
+ void WINAPI KeStackAttachProcess(KPROCESS *process, KAPC_STATE *apc_state)
+ {
+     FIXME("process %p, apc_state %p stub.\n", process, apc_state);
+@@ -4689,7 +5396,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
      switch(reason)
      {
      case DLL_PROCESS_ATTACH:
@@ -518,7 +1105,7 @@ index b3f4575..bce4ee7 100644
  #if defined(__i386__) || defined(__x86_64__)
          handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
  #endif
-@@ -4699,6 +4999,9 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -4699,6 +5405,9 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
          dpc_call_tls_index = TlsAlloc();
          LdrRegisterDllNotification( 0, ldr_notify_callback, NULL, &ldr_notify_cookie );
          break;
@@ -529,7 +1116,7 @@ index b3f4575..bce4ee7 100644
          LdrUnregisterDllNotification( ldr_notify_cookie );
  
 diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
-index 4426e50..f7c86d6 100644
+index 4426e50..49094b1 100644
 --- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
 +++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
 @@ -562,6 +562,7 @@
@@ -559,6 +1146,22 @@ index 4426e50..f7c86d6 100644
  @ stub PsDisableImpersonation
  @ stub PsEstablishWin32Callouts
  @ stub PsGetContextThread
+@@ -917,13 +919,13 @@
+ @ stub PsGetJobLock
+ @ stub PsGetJobSessionId
+ @ stub PsGetJobUIRestrictionsClass
+-@ stub PsGetProcessCreateTimeQuadPart
++@ stdcall PsGetProcessCreateTimeQuadPart(ptr)
+ @ stub PsGetProcessDebugPort
+ @ stub PsGetProcessExitProcessCalled
+ @ stub PsGetProcessExitStatus
+ @ stub PsGetProcessExitTime
+ @ stdcall PsGetProcessId(ptr)
+-@ stub PsGetProcessImageFileName
++@ stdcall PsGetProcessImageFileName(ptr)
+ @ stdcall PsGetProcessInheritedFromUniqueProcessId(ptr)
+ @ stub PsGetProcessJob
+ @ stub PsGetProcessPeb
 @@ -1343,7 +1345,7 @@
  @ stub SeCaptureSubjectContext
  @ stub SeCloseObjectAuditAlarm
@@ -588,3 +1191,15 @@ index 4426e50..f7c86d6 100644
  @ stub SeUnlockSubjectContext
  @ stub SeUnregisterLogonSessionTerminatedRoutine
  @ stub SeValidSecurityDescriptor
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl_private.h b/dlls/ntoskrnl.exe/ntoskrnl_private.h
+index d9db6f6..5f87749 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl_private.h
++++ b/dlls/ntoskrnl.exe/ntoskrnl_private.h
+@@ -56,6 +56,7 @@ struct _EPROCESS
+     DISPATCHER_HEADER header;
+     PROCESS_BASIC_INFORMATION info;
+     BOOL wow64;
++    char image_name[16];
+ };
+ 
+ struct _KTHREAD

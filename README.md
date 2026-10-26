@@ -82,6 +82,12 @@ scripts/start-allods.sh
    в Wine это `TEB.ReservedForDebuggerInstrumentation[15]` — теперь заполняется для каждого потока.
 5. Безопасность клиента: `SeCreateClientSecurity`, `SeImpersonateClientEx`, `SeImpersonateClient`,
    `SeTokenType`, `PsRevertToSelf`, `PsDereferencePrimaryToken`, `PsDereferenceImpersonationToken`.
+6. Уведомления о процессах: `PsSetCreateProcessNotifyRoutine(Ex)`. У Wine нет перехвата создания
+   процессов в ядре, поэтому поток `wine_process_monitor` в `winedevice` раз в 50 мс сверяет список
+   процессов и сообщает драйверу о новых и завершённых с настоящими данными (родитель, путь
+   образа, командная строка). Уведомление приходит с опозданием до ~50 мс и не может запретить запуск.
+7. Информация о процессах: `PsGetProcessImageFileName`, `PsGetProcessCreateTimeQuadPart`,
+   `PsGetProcessSectionBaseAddress`, `PsReferenceProcessFilePointer`, `MmCopyVirtualMemory`.
 
 Сборка и установка после правок:
 
@@ -99,7 +105,17 @@ cp ~/Games/src/build/dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/Cr
 ## Логи
 
 - `impactdiag.log`: строка `... 150029 <код>` — отказ запуска (были `5aa`, `6`, `57`, `5`).
-  При успешном запуске её нет, но остаётся `100 ... 220601 c0000002` (STATUS_NOT_IMPLEMENTED
-  в какой-то проверке античита) — возможная причина будущих вылетов.
+  При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`: античит в процессе игры
+  запрашивает ACPI-таблицы прошивки (`SystemFirmwareTableInformation`, провайдер `ACPI`), а у
+  Apple Silicon их нет. Это проверка железа; подделывать таблицы, чтобы её пройти, — обход
+  защиты, этого здесь сознательно нет.
+
+## Известные проблемы
+
+- Игра падает примерно через минуту в мире: `ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по
+  адресу `0x140B8CAC4`, одинаково до и после изменений в античите. Код игры зашифрован, причина
+  не установлена. wined3d рисует через OpenGL macOS, которому не хватает части расширений
+  (`GL_ARB_uniform_buffer_object`, `GL_EXT_texture_array`), и представляется GeForce 8800 GTX.
+  Crash-отчёты игры: `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\`.
 - `bin_dx9\AOgame_d3d9.log` — лог DXVK, если включён.
-- Трассы отладки: `~/Games/logs` (можно удалить, ~28 ГБ).
+- Трассы отладки не хранятся: писать их во временную папку (например `~/Games/trace`) и удалять после разбора.

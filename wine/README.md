@@ -6,7 +6,7 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 
 | Файл | Что это |
 |---|---|
-| `ntoskrnl.exe/ntoskrnl.c`, `ntoskrnl.exe/ntoskrnl.exe.spec` | изменённые исходники целиком |
+| `ntoskrnl.exe/ntoskrnl.c`, `ntoskrnl.exe/ntoskrnl.exe.spec`, `ntoskrnl.exe/ntoskrnl_private.h` | изменённые исходники целиком |
 | `ntoskrnl.exe/original/` | те же файлы до изменений |
 | `../patches/ntoskrnl-impactdrv.patch` | разница в виде патча (`git apply` в корне исходников Wine) |
 | `bin/ntoskrnl.exe` | собранный патченый модуль, который сейчас стоит в `~/Games/cx` |
