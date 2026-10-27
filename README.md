@@ -1,20 +1,22 @@
 # Аллоды Онлайн на macOS (Apple M4 Pro, macOS 26.5)
 
-Состояние на 27.10.2026: **игра запускается и рисует картинку** (RU, VK Play, build 623).
+Состояние на 27.10.2026: игра запускается из VK Play GameCenter, вход в мир и игра работают,
+переключение приложений (Cmd+Tab, свайп) не роняет игру. Клиент RU, build 623.
 
 ## Установка на новом Маке (Apple Silicon)
 
 1. Установить [CrossOver 26.3](https://www.codeweavers.com/crossover) в `/Applications`.
-   Для другой версии CrossOver готовый `wine/bin/ntoskrnl.exe` может не подойти — см. шаг 6.
+   Готовые модули в `wine/bin/` собраны под 26.3; для другой версии — шаг 6.
 2. Скопировать эту папку на Мак и запустить:
 
    ```bash
    scripts/setup.sh
    ```
 
-   Скрипт создаст бутылку `Allods` (win10_64), пропишет ей переменные окружения, скопирует
-   движок CrossOver в `~/Games/cx`, поставит туда патченый `ntoskrnl.exe` и скачает установщик
-   GameCenter (`https://static.gc.vkplay.ru/AllodsLoader.exe`).
+   Скрипт создаёт бутылку `Allods` (win10_64), прописывает ей переменные окружения, копирует
+   движок CrossOver в `~/Games/cx`, ставит туда `ntoskrnl.exe`, `ntdll.so` и `winemac.so` из
+   `wine/bin/`, прописывает в реестр бутылки раскладку клавиш и настройки фокуса окна игры,
+   скачивает установщик GameCenter (`https://static.gc.vkplay.ru/AllodsLoader.exe`).
 3. Запустить установщик командой, которую напечатает скрипт. В GameCenter войти в VK Play
    (браузер откроет авторизацию; в Brave для `api.vkplay.ru` выключить Shields и разрешить
    Localhost access, Safari работает без настроек) и скачать Аллоды Онлайн (~17 ГБ).
@@ -23,9 +25,9 @@
 5. Ещё раз `scripts/setup.sh` — он выключит MSAA в `global.cfg`. Дальше играть через
    `scripts/start-allods.sh`.
 6. Только если версия CrossOver не 26.3: `brew install mingw-w64 bison`, затем
-   `scripts/build-ntoskrnl.sh <версия>` (например `26.4.0`) — скачает исходники CrossOver,
-   наложит `patches/ntoskrnl-impactdrv.patch`, соберёт и установит модуль.
-   Если патч не накладывается, переносить правки вручную по `wine/ntoskrnl.exe/`.
+   `scripts/build-ntoskrnl.sh <версия>` (например `26.4.0`). Скрипт скачивает исходники CrossOver,
+   накладывает патчи из `patches/`, собирает и устанавливает модули. Если патч не накладывается,
+   переносить правки вручную по `wine/ntoskrnl.exe/`, `wine/ntdll/`, `wine/winemac.drv/`.
 
 Описание всех файлов папки — `wine/README.md`.
 
@@ -38,19 +40,21 @@ scripts/start-allods.sh
 Скрипт останавливает wineserver бутылки, поднимает драйвер античита (`sc start impactdrv`) и
 запускает GameCenter движком из `~/Games/cx`. Дальше в GameCenter: Аллоды Онлайн → Play.
 
-Обычный запуск из CrossOver.app **не работает**: в нём штатный `ntoskrnl.exe`, античит упадёт.
+Запуск из CrossOver.app не работает: там штатный `ntoskrnl.exe`, драйвер античита падает.
 
-## Что для этого нужно
+## Компоненты
 
 | Компонент | Где |
 |---|---|
-| CrossOver 26.3 (триал) | `/Applications/CrossOver.app`, не изменён |
-| Копия движка CrossOver с патченым `ntoskrnl.exe` | `~/Games/cx/CrossOver` |
-| Исходники и сборка Wine (CrossOver 26.3) | `~/Games/src/sources/wine`, `~/Games/src/build` |
-| Патч ntoskrnl | `patches/ntoskrnl-impactdrv.patch` |
+| CrossOver 26.3 (триал) | `/Applications/CrossOver.app`, источник копии движка |
+| Копия движка CrossOver с патчеными модулями | `~/Games/cx/CrossOver` |
+| Исходники и сборка Wine (CrossOver 26.3) | `~/Games/src/sources/wine`, `~/Games/src/build`, `~/Games/src/build-x64` |
+| Патчи | `patches/ntoskrnl-impactdrv.patch`, `patches/ntdll-firmware-tables.patch`, `patches/winemac-focus.patch` |
 | Бутылка `Allods` (win10_64) | `~/Library/Application Support/CrossOver/Bottles/Allods` |
 
-Настройки бутылки (`cxbottle.conf`, секция `[EnvironmentVariables]`):
+## Настройки
+
+Бутылка (`cxbottle.conf`, секция `[EnvironmentVariables]`):
 
 ```
 "CX_GRAPHICS_BACKEND" = "wined3d"
@@ -58,25 +62,28 @@ scripts/start-allods.sh
 "LC_ALL" = "ru_RU.UTF-8"
 ```
 
-- `wined3d`: D3DMetal не умеет D3D9, под DXVK (MoltenVK) часть шейдеров не компилируется — чёрный экран.
+- `wined3d`: D3DMetal не поддерживает D3D9, под DXVK (MoltenVK) часть шейдеров не компилируется —
+  чёрный экран.
 - Русская локаль даёт ANSI-кодировку 1251. Без неё игра создаёт каталоги ANSI-функциями,
   путь `C:\VK Play\Аллоды Онлайн\Personal` превращается в `?????? ??????`, и появляется
   «Couldn't create crash report directory».
 
 Клавиатура (реестр бутылки, `HKCU\Software\Wine\Mac Driver`): `LeftCommandIsCtrl`,
-`RightCommandIsCtrl`, `LeftOptionIsAlt`, `RightOptionIsAlt` = `y`. Cmd работает как Ctrl,
-Option как Alt. По умолчанию CrossOver отдаёт Cmd как Alt; после Cmd+Tab игра не получает
-отпускание Alt (ошибка Wine 48512). Падение при Cmd+Tab это не исправило (см. «Фокус окна»),
-но раскладка оставлена: Alt на Option не залипает при переключении приложений.
+`RightCommandIsCtrl`, `LeftOptionIsAlt`, `RightOptionIsAlt` = `y` — Cmd работает как Ctrl,
+Option как Alt. По умолчанию CrossOver передаёт Cmd как Alt, и после Cmd+Tab игра не получает
+отпускание Alt (ошибка Wine 48512).
 
-Настройки игры (`C:\VK Play\Аллоды Онлайн\Personal\global.cfg`): `gfx_antialias=0`.
+Фокус окна игры (реестр бутылки, `HKCU\Software\Wine\AppDefaults\AOgame.exe\Mac Driver`):
+`KeepForegroundOnDeactivate=y`, `SyncDisplaysOnActivate=n` — см. «winemac.drv».
+
+Игра (`C:\VK Play\Аллоды Онлайн\Personal\global.cfg`): `gfx_antialias=0`.
 С MSAA wined3d не создаёт depth/stencil-поверхность (`D3DERR_NOTAVAILABLE`) — белый экран.
 Оригинал конфига: `~/Games/src/global.cfg.orig`.
 
-## Что исправлено в ntoskrnl (Wine)
+## ntoskrnl.exe
 
 Античит Astrum (`impactsvc` + драйвер ядра `impactdrv1.sys`) работает через эмуляцию ядра Wine
-(`winedevice`). Чтобы он прошёл, в `dlls/ntoskrnl.exe` реализовано:
+(`winedevice`). Для него в `dlls/ntoskrnl.exe` реализовано:
 
 1. Функции памяти/MDL, бывшие заглушками: `MmProbeAndLockPages`, `MmUnlockPages`,
    `MmMapLockedPagesSpecifyCache`, `MmUnmapLockedPages`, `MmBuildMdlForNonPagedPool`;
@@ -85,53 +92,54 @@ Option как Alt. По умолчанию CrossOver отдаёт Cmd как Alt
    а хэндл принадлежит `impactsvc` — хэндл дублируется из процесса клиента.
 3. `KeGetCurrentThread` для потока запросов открывает клиентский поток с минимальными правами.
 4. Текущий поток через `gs:[0x188]`: x64-драйверы читают `KPCR.Prcb.CurrentThread` инлайном,
-   в Wine это `TEB.ReservedForDebuggerInstrumentation[15]` — теперь заполняется для каждого потока.
+   в Wine это `TEB.ReservedForDebuggerInstrumentation[15]` — заполняется для каждого потока.
 5. Безопасность клиента: `SeCreateClientSecurity`, `SeImpersonateClientEx`, `SeImpersonateClient`,
    `SeTokenType`, `PsRevertToSelf`, `PsDereferencePrimaryToken`, `PsDereferenceImpersonationToken`.
-6. Уведомления о процессах: `PsSetCreateProcessNotifyRoutine(Ex)`. У Wine нет перехвата создания
+6. Уведомления о процессах: `PsSetCreateProcessNotifyRoutine(Ex)`. В Wine нет перехвата создания
    процессов в ядре, поэтому поток `wine_process_monitor` в `winedevice` раз в 50 мс сверяет список
-   процессов и сообщает драйверу о новых и завершённых с настоящими данными (родитель, путь
-   образа, командная строка). Уведомление приходит с опозданием до ~50 мс и не может запретить запуск.
+   процессов и сообщает драйверу о новых и завершённых (родитель, путь образа, командная строка).
+   Уведомление приходит с опозданием до ~50 мс и не может запретить запуск.
 7. Информация о процессах: `PsGetProcessImageFileName`, `PsGetProcessCreateTimeQuadPart`,
    `PsGetProcessSectionBaseAddress`, `PsReferenceProcessFilePointer`, `MmCopyVirtualMemory`.
 
-## Что исправлено в ntdll (Wine)
+## ntdll
 
 `dlls/ntdll/unix/system.c`: на запрос таблиц прошивки ACPI/FIRM
-(`NtQuerySystemInformation(SystemFirmwareTableInformation)`) Wine отвечал «не реализовано».
-Теперь он отвечает правду: у Apple Silicon ACPI-таблиц нет — пустой список, а на запрос конкретной
-таблицы «не найдена», как Windows для отсутствующей таблицы. Таблицы не подделываются.
+(`NtQuerySystemInformation(SystemFirmwareTableInformation)`) Wine отвечал `STATUS_NOT_IMPLEMENTED`.
+Теперь перечисление возвращает пустой список, запрос конкретной таблицы — `STATUS_NOT_FOUND`,
+как Windows для отсутствующей таблицы: у Apple Silicon ACPI-таблиц нет.
 
-## Что исправлено в winemac.drv (Wine)
+## winemac.drv
 
 Игра падала в мире (не в меню), когда снова становилась активной после Cmd+Tab или свайпа:
 `ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по адресу `0x140B8CAC4`, в первом кадре после
-`WM_ACTIVATEAPP`, ещё до ввода. Код игры зашифрован, сама причина внутри игры не установлена.
+`WM_ACTIVATEAPP`, до ввода. Код игры зашифрован, причина внутри игры не установлена.
 
 `patches/winemac-focus.patch` добавляет драйверу macOS две настройки, обе включены только для
-`AOgame.exe` (`HKCU\Software\Wine\AppDefaults\AOgame.exe\Mac Driver`):
-- `KeepForegroundOnDeactivate=y` — когда впереди другое приложение macOS, окно игры остаётся
-  активным для Windows: игра не получает потерю и возврат фокуса и не идёт в падающий код.
-  Курсор при переключении всё равно освобождается. Игра продолжает рисовать в фоне.
+`AOgame.exe`:
+- `KeepForegroundOnDeactivate=y` — пока впереди другое приложение macOS, окно игры остаётся
+  активным для Windows: игра не получает потерю и возврат фокуса. Курсор при переключении
+  освобождается. Игра продолжает рисовать в фоне.
 - `SyncDisplaysOnActivate=n` — не посылать `WM_DISPLAYCHANGE` при каждой активации приложения.
 
-Проверено 27.10: в мире несколько Cmd+Tab и свайпов — игра не падает.
+Проверено 27.10: в мире несколько Cmd+Tab и свайпов — падений нет.
 
-## Что видит античит о машине
+Без этого патча не помогали: окно с рамкой (`gfxBorderless=0`), виртуальный рабочий стол Wine,
+Cmd как Ctrl.
 
-Ничего не скрывается и не подделывается:
-- SMBIOS (Wine берёт из IOKit macOS): производитель `Apple Inc.`, модель Мака, **настоящий
-  серийный номер и UUID платформы**;
+## Данные о машине, доступные игре и античиту
+
+- SMBIOS (Wine берёт из IOKit macOS): производитель `Apple Inc.`, модель Мака, серийный номер и
+  UUID платформы;
 - ACPI: таблиц нет;
-- `ntdll` экспортирует `wine_get_version`/`wine_get_host_version` — программа видит, что это Wine
-  на Darwin.
+- `ntdll` экспортирует `wine_get_version`/`wine_get_host_version`: Wine на Darwin.
 
-Сборка и установка после правок:
+## Сборка и установка после правок
 
 ```bash
 make -C ~/Games/src/build dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe
 cp ~/Games/src/build/dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x86_64-windows/
-# ntdll.so — отдельная x86_64-сборка (CrossOver работает под Rosetta), см. wine/configure-unix-command.txt
+# unix-часть — отдельная x86_64-сборка (CrossOver работает под Rosetta), см. wine/configure-unix-command.txt
 MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/ntdll/ntdll.so
 cp ~/Games/src/build-x64/dlls/ntdll/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/
 MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/winemac.drv/winemac.so
@@ -140,26 +148,23 @@ cp ~/Games/src/build-x64/dlls/winemac.drv/winemac.so ~/Games/cx/CrossOver/lib/wi
 
 Или всё сразу: `scripts/build-ntoskrnl.sh`.
 
-## Риски
-
-- Античит работает в нестандартном окружении; как на это отреагирует Astrum, неизвестно.
-- После обновления клиента или античита патч может перестать хватать — смотреть
-  `drive_c/users/crossover/AppData/Local/Temp/impactdiag.log` и `GameCenter/main.log` (cp1251).
-
 ## Логи
 
-- `impactdiag.log`: строка `... 150029 <код>` — отказ запуска (были `5aa`, `6`, `57`, `5`).
-  При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`. Это не ACPI (после
-  честного ответа про ACPI код остался) и не функции ядра: запись появляется до загрузки
-  `acclient64.dll`, и рядом нет ни одного сообщения Wine о нереализованной функции. Источник
-  не найден.
-
-## Известные проблемы
-
-- Падение при Cmd+Tab обойдено настройкой драйвера (см. «Что исправлено в winemac.drv»).
-  Без неё не помогали: окно с рамкой (`gfxBorderless=0`), виртуальный рабочий стол Wine,
-  Cmd как Ctrl. wined3d рисует через OpenGL macOS, которому не хватает части расширений
-  (`GL_ARB_uniform_buffer_object`, `GL_EXT_texture_array`), и представляется GeForce 8800 GTX.
-  Crash-отчёты игры: `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\`.
+- `drive_c/users/crossover/AppData/Local/Temp/impactdiag.log` — диагностика античита.
+  Строка `... 150029 <код>` — отказ запуска (были `5aa`, `6`, `57`, `5`, все до исправлений
+  ntoskrnl). При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`. Это не ACPI
+  (код остался после исправления ntdll) и не функции ядра: запись появляется до загрузки
+  `acclient64.dll`, рядом нет сообщений Wine о нереализованных функциях. Источник не найден.
+- `drive_c/users/crossover/AppData/Local/GameCenter/main.log` (cp1251) — запуск игры, античит,
+  `MacarController` (сессия GameCenter с сервером, раз в 20 с echo, раз в 80 с handshake).
+- `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\` — crash-отчёты игры (минидамп + xml).
 - `bin_dx9\AOgame_d3d9.log` — лог DXVK, если включён.
-- Трассы отладки не хранятся: писать их во временную папку (например `~/Games/trace`) и удалять после разбора.
+- После обновления клиента или античита смотреть сначала `impactdiag.log` и `main.log`.
+
+## Ограничения
+
+- wined3d рисует через OpenGL macOS без части расширений (`GL_ARB_uniform_buffer_object`,
+  `GL_EXT_texture_array`) и представляется GeForce 8800 GTX; в лог Wine идут предупреждения
+  о шейдерах.
+- Трассы отладки не хранить в репозитории: писать во временную папку (например `~/Games/trace`)
+  через `wine --debugmsg <каналы> --cx-log <файл>` и удалять после разбора.

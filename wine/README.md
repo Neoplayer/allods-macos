@@ -23,7 +23,7 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 ## Восстановление с нуля
 
 ```bash
-# копия движка CrossOver (бандл в /Applications защищён и не меняется)
+# копия движка CrossOver; модули меняются только в копии
 mkdir -p ~/Games/cx
 cp -R /Applications/CrossOver.app/Contents/SharedSupport/CrossOver ~/Games/cx/
 
