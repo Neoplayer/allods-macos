@@ -1,7 +1,8 @@
 # Аллоды Онлайн на macOS (Apple M4 Pro, macOS 26.5)
 
 Состояние на 27.10.2026: игра запускается из VK Play GameCenter, вход в мир и игра работают,
-переключение приложений (Cmd+Tab, свайп) не роняет игру. Клиент RU, build 623.
+переключение приложений (Cmd+Tab, свайп) не роняет игру. Клиент RU, build 623, DirectX 11 через
+DXMT, 55–70 FPS на главной площади.
 
 ## Установка на новом Маке (Apple Silicon)
 
@@ -39,6 +40,7 @@ scripts/start-allods.sh
 
 Скрипт останавливает wineserver бутылки, поднимает драйвер античита (`sc start impactdrv`) и
 запускает GameCenter движком из `~/Games/cx`. Дальше в GameCenter: Аллоды Онлайн → Play.
+В настройках игры в GameCenter должна стоять галка «Использовать DirectX 11».
 
 Запуск из CrossOver.app не работает: там штатный `ntoskrnl.exe`, драйвер античита падает.
 
@@ -57,13 +59,34 @@ scripts/start-allods.sh
 Бутылка (`cxbottle.conf`, секция `[EnvironmentVariables]`):
 
 ```
-"CX_GRAPHICS_BACKEND" = "wined3d"
+"CX_GRAPHICS_BACKEND" = "dxmt"
+"WINEMSYNC" = "1"
+"MTL_HUD_ENABLED" = "1"
 "LANG" = "ru_RU.UTF-8"
 "LC_ALL" = "ru_RU.UTF-8"
 ```
 
-- `wined3d`: D3DMetal не поддерживает D3D9, под DXVK (MoltenVK) часть шейдеров не компилируется —
-  чёрный экран.
+- В установке два клиента: `bin_dx9\AOgame.exe` (D3D9) и `bin\AOgame.exe` (D3D11). GameCenter
+  запускает D3D11-клиент, если в настройках игры стоит «Использовать DirectX 11»
+  (`ALTEXEFILENAME64BIT=bin\AOgame.exe` в `configBigGames.xml`).
+- `dxmt`: D3D11 → Metal. Замер 27.10 на главной площади, окно без рамки, прежний `global.cfg`:
+
+  | Режим | FPS | Мерцание |
+  |---|---|---|
+  | D3D11, `dxmt` | 55–70 | нет |
+  | D3D11, `d3dmetal` | 51–66 | нет |
+  | D3D11, `dxvk` (MoltenVK) | 56–84 | мелкое мерцание персонажа и неба, `dxvk.conf` с `invariantPosition` и `enableRtOutputNanFixup` не помогает |
+  | D3D9, `wined3d` (OpenGL) | 30–43 | нет |
+
+  Видеокарта тратит на кадр около 2 мс; упор в CPU: `AOgame.exe` под Rosetta занимает 2–2,5 ядра.
+  DXMT держит 4 ГБ видеопамяти, D3DMetal — 0,8 ГБ. D3DMetal не поддерживает D3D9; под DXVK
+  D3D9-клиент даёт чёрный экран, поэтому для D3D9 нужен `wined3d`.
+- `WINEMSYNC=1`: синхронизация через mach-порты вместо wineserver, меньше нагрузка на CPU.
+  `sc start impactdrv` с ним — RUNNING.
+- `MTL_HUD_ENABLED=1`: счётчик кадров Metal поверх окна (FPS, время кадра GPU, `Game Mode`);
+  `setup.sh` его не ставит, убрать, когда не нужен.
+- Полноэкранный режим игры ничего не даёт: окно так же композитится, Game Mode macOS не
+  включается, а после Cmd+Tab игра падает (см. «winemac.drv»). Нужен режим «Окно без рамки».
 - Русская локаль даёт ANSI-кодировку 1251. Без неё игра создаёт каталоги ANSI-функциями,
   путь `C:\VK Play\Аллоды Онлайн\Personal` превращается в `?????? ??????`, и появляется
   «Couldn't create crash report directory».
@@ -130,7 +153,8 @@ Option как Alt. По умолчанию CrossOver передаёт Cmd как
   освобождается. Игра продолжает рисовать в фоне.
 - `SyncDisplaysOnActivate=n` — не посылать `WM_DISPLAYCHANGE` при каждой активации приложения.
 
-Проверено 27.10: в мире несколько Cmd+Tab и свайпов — падений нет.
+Проверено 27.10: в мире несколько Cmd+Tab и свайпов — падений нет. В полноэкранном режиме игры
+патч не помогает: D3D11-клиент упал после Cmd+Tab (`0x140b8dce4` в `bin\AOgame.exe`).
 
 Без этого патча не помогали: окно с рамкой (`gfxBorderless=0`), виртуальный рабочий стол Wine,
 Cmd как Ctrl.
@@ -154,6 +178,18 @@ cp ~/Games/src/build-x64/dlls/ntdll/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_6
 MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/winemac.drv/winemac.so
 cp ~/Games/src/build-x64/dlls/winemac.drv/winemac.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/
 ```
+
+После сборки unix-модулям нужен второй путь поиска библиотек, как у модулей CrossOver:
+
+```bash
+install_name_tool -add_rpath @loader_path/../../../lib64 ~/Games/cx/CrossOver/lib/wine/x86_64-unix/ntdll.so
+install_name_tool -add_rpath @loader_path/../../../lib64 ~/Games/cx/CrossOver/lib/wine/x86_64-unix/winemac.so
+```
+
+Без него `ntdll` не загружает `cxcompatdb.so` (ему нужна `libgnutls.30.dylib` из `lib64`), и
+CrossOver молча игнорирует `CX_GRAPHICS_BACKEND`: D3D11 рисует встроенный wined3d. Признак —
+в HUD Metal написано `Metal` вместо `D3D11` у D3DMetal, а в `--cx-log` с `+module` строка
+`error loading cxcompatdb.so`. На wined3d D3D11-клиент мерцает.
 
 Или всё сразу: `scripts/build-ntoskrnl.sh`.
 

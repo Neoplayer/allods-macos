@@ -35,7 +35,7 @@ python3 - "$PREFIX/cxbottle.conf" <<'EOF'
 import re, sys
 
 path = sys.argv[1]
-wanted = {"CX_GRAPHICS_BACKEND": "wined3d", "LANG": "ru_RU.UTF-8", "LC_ALL": "ru_RU.UTF-8"}
+wanted = {"CX_GRAPHICS_BACKEND": "dxmt", "WINEMSYNC": "1", "LANG": "ru_RU.UTF-8", "LC_ALL": "ru_RU.UTF-8"}
 
 text = open(path, encoding="utf-8").read()
 head, sep, tail = text.partition("[EnvironmentVariables]\n")

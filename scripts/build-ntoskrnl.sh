@@ -34,8 +34,12 @@ mkdir -p ../build-x64
 cd ../build-x64
 [[ -f Makefile ]] || zsh -c "$(cat "$REPO/wine/configure-unix-command.txt")"
 MACOSX_DEPLOYMENT_TARGET=10.15 PATH="/opt/homebrew/opt/bison/bin:$PATH" make -j"$(sysctl -n hw.ncpu)" dlls/ntdll/ntdll.so
+# CrossOver's own build also searches lib64: without it ntdll cannot load cxcompatdb.so (gnutls),
+# and CX_GRAPHICS_BACKEND is silently ignored
+install_name_tool -add_rpath @loader_path/../../../lib64 dlls/ntdll/ntdll.so 2>/dev/null || true
 cp dlls/ntdll/ntdll.so "$LIB/x86_64-unix/ntdll.so"
 echo "Установлен $LIB/x86_64-unix/ntdll.so"
 MACOSX_DEPLOYMENT_TARGET=10.15 PATH="/opt/homebrew/opt/bison/bin:$PATH" make -j"$(sysctl -n hw.ncpu)" dlls/winemac.drv/winemac.so
+install_name_tool -add_rpath @loader_path/../../../lib64 dlls/winemac.drv/winemac.so 2>/dev/null || true
 cp dlls/winemac.drv/winemac.so "$LIB/x86_64-unix/winemac.so"
 echo "Установлен $LIB/x86_64-unix/winemac.so"

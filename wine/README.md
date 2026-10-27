@@ -14,10 +14,10 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 | `ntdll/system.c`, `ntdll/original/system.c` | изменённый и исходный `dlls/ntdll/unix/system.c` |
 | `../patches/ntdll-firmware-tables.patch` | патч ntdll (ответ про ACPI-таблицы) |
 | `../patches/ntdll-platform-role.patch` | патч ntdll поверх предыдущего (`NtPowerInformation(PlatformRole)`) |
-| `bin/ntdll.so`, `bin/ntdll.so.orig` | собранная unix-часть ntdll (x86_64, macOS 10.15+) и оригинал |
+| `bin/ntdll.so`, `bin/ntdll.so.orig` | собранная unix-часть ntdll (x86_64, macOS 10.15+, rpath `@loader_path/../../../lib64` добавлен `install_name_tool`) и оригинал |
 | `winemac.drv/*.c`, `winemac.drv/*.h`, `winemac.drv/*.m`, `winemac.drv/original/` | изменённые и исходные файлы драйвера macOS |
 | `../patches/winemac-focus.patch` | патч winemac (фокус окна игры, `WM_DISPLAYCHANGE` при активации) |
-| `bin/winemac.so`, `bin/winemac.so.orig` | собранный драйвер macOS (x86_64, macOS 10.15+, с MoltenVK) и оригинал |
+| `bin/winemac.so`, `bin/winemac.so.orig` | собранный драйвер macOS (x86_64, macOS 10.15+, с MoltenVK, тот же rpath) и оригинал |
 | `configure-unix-command.txt` | configure для x86_64 unix-сборки (из `~/Games/src/build-x64`); Vulkan через MoltenVK из `~/Games/cx/CrossOver/lib64` нужен для winemac.so |
 | `configure-command.txt` | команда configure (из каталога `~/Games/src/build`) |
 
