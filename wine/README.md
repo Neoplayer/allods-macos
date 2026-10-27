@@ -13,6 +13,7 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 | `bin/ntoskrnl.exe.orig` | оригинальный модуль из CrossOver 26.3 |
 | `ntdll/system.c`, `ntdll/original/system.c` | изменённый и исходный `dlls/ntdll/unix/system.c` |
 | `../patches/ntdll-firmware-tables.patch` | патч ntdll (ответ про ACPI-таблицы) |
+| `../patches/ntdll-platform-role.patch` | патч ntdll поверх предыдущего (`NtPowerInformation(PlatformRole)`) |
 | `bin/ntdll.so`, `bin/ntdll.so.orig` | собранная unix-часть ntdll (x86_64, macOS 10.15+) и оригинал |
 | `winemac.drv/*.c`, `winemac.drv/*.h`, `winemac.drv/*.m`, `winemac.drv/original/` | изменённые и исходные файлы драйвера macOS |
 | `../patches/winemac-focus.patch` | патч winemac (фокус окна игры, `WM_DISPLAYCHANGE` при активации) |

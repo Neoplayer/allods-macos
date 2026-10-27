@@ -17,6 +17,7 @@ if [[ ! -d sources/wine ]]; then
     tar xzf cx.tar.gz 'sources/wine/*'
     patch -d sources/wine -p1 < "$REPO/patches/ntoskrnl-impactdrv.patch"
     patch -d sources/wine -p1 < "$REPO/patches/ntdll-firmware-tables.patch"
+    patch -d sources/wine -p1 < "$REPO/patches/ntdll-platform-role.patch"
     patch -d sources/wine -p1 < "$REPO/patches/winemac-focus.patch"
 fi
 

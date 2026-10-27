@@ -49,7 +49,7 @@ scripts/start-allods.sh
 | CrossOver 26.3 (триал) | `/Applications/CrossOver.app`, источник копии движка |
 | Копия движка CrossOver с патчеными модулями | `~/Games/cx/CrossOver` |
 | Исходники и сборка Wine (CrossOver 26.3) | `~/Games/src/sources/wine`, `~/Games/src/build`, `~/Games/src/build-x64` |
-| Патчи | `patches/ntoskrnl-impactdrv.patch`, `patches/ntdll-firmware-tables.patch`, `patches/winemac-focus.patch` |
+| Патчи | `patches/ntoskrnl-impactdrv.patch`, `patches/ntdll-firmware-tables.patch`, `patches/ntdll-platform-role.patch`, `patches/winemac-focus.patch` |
 | Бутылка `Allods` (win10_64) | `~/Library/Application Support/CrossOver/Bottles/Allods` |
 
 ## Настройки
@@ -104,10 +104,18 @@ Option как Alt. По умолчанию CrossOver передаёт Cmd как
 
 ## ntdll
 
-`dlls/ntdll/unix/system.c`: на запрос таблиц прошивки ACPI/FIRM
-(`NtQuerySystemInformation(SystemFirmwareTableInformation)`) Wine отвечал `STATUS_NOT_IMPLEMENTED`.
-Теперь перечисление возвращает пустой список, запрос конкретной таблицы — `STATUS_NOT_FOUND`,
-как Windows для отсутствующей таблицы: у Apple Silicon ACPI-таблиц нет.
+`dlls/ntdll/unix/system.c`, два патча:
+
+- `patches/ntdll-firmware-tables.patch`: на запрос таблиц прошивки ACPI/FIRM
+  (`NtQuerySystemInformation(SystemFirmwareTableInformation)`) Wine отвечал `STATUS_NOT_IMPLEMENTED`.
+  Теперь перечисление возвращает пустой список, запрос конкретной таблицы — `STATUS_NOT_FOUND`,
+  как Windows для отсутствующей таблицы: у Apple Silicon ACPI-таблиц нет.
+- `patches/ntdll-platform-role.patch`: `NtPowerInformation(PlatformRole)` (уровень 75, в заголовках
+  Wine его нет) возвращает `PlatformRoleMobile`: машина — ноутбук. Раньше уровень уходил в
+  `default` с `STATUS_NOT_IMPLEMENTED` и сообщением только в канале WARN. Этот запрос делает
+  `acclient64.dll` напрямую после инициализации и пишет отказ в `impactdiag.log` строкой
+  `100 ... 220601 c0000002`. Найдено трассой `+syscall` (27.10): других системных вызовов
+  с `c0000002` в процессе игры нет.
 
 ## winemac.drv
 
@@ -132,6 +140,7 @@ Cmd как Ctrl.
 - SMBIOS (Wine берёт из IOKit macOS): производитель `Apple Inc.`, модель Мака, серийный номер и
   UUID платформы;
 - ACPI: таблиц нет;
+- роль платформы (`PlatformRole`): мобильная;
 - `ntdll` экспортирует `wine_get_version`/`wine_get_host_version`: Wine на Darwin.
 
 ## Сборка и установка после правок
@@ -152,9 +161,12 @@ cp ~/Games/src/build-x64/dlls/winemac.drv/winemac.so ~/Games/cx/CrossOver/lib/wi
 
 - `drive_c/users/crossover/AppData/Local/Temp/impactdiag.log` — диагностика античита.
   Строка `... 150029 <код>` — отказ запуска (были `5aa`, `6`, `57`, `5`, все до исправлений
-  ntoskrnl). При успешном запуске её нет, но остаётся `100 ... 220601 c0000002`. Это не ACPI
-  (код остался после исправления ntdll) и не функции ядра: запись появляется до загрузки
-  `acclient64.dll`, рядом нет сообщений Wine о нереализованных функциях. Источник не найден.
+  ntoskrnl). Строка `100 ...` пишет `acclient64.dll` внутри `AOgame.exe`; `100 ... 220601 c0000002`
+  была отказом `NtPowerInformation(PlatformRole)`, см. «ntdll».
+- Если в `impactdiag.log` код `c0000002` или другой отказ без сообщений Wine: запустить с
+  `--debugmsg +syscall` (лог в `.gz`, только на время запуска) и искать в процессе игры
+  `SysRet ... retval=<код>`. Обычная трасса не поможет: без `--cx-log` обёртка CrossOver ставит
+  `-all`, а часть заглушек Wine пишет в WARN, а не в FIXME.
 - `drive_c/users/crossover/AppData/Local/GameCenter/main.log` (cp1251) — запуск игры, античит,
   `MacarController` (сессия GameCenter с сервером, раз в 20 с echo, раз в 80 с handshake).
 - `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\` — crash-отчёты игры (минидамп + xml).
