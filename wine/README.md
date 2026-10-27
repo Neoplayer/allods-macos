@@ -1,6 +1,6 @@
 # Изменения в Wine (CrossOver 26.3)
 
-Меняются `dlls/ntoskrnl.exe` и `dlls/ntdll/unix/system.c`. Исходники — исходники CrossOver 26.3
+Меняются `dlls/ntoskrnl.exe`, `dlls/ntdll/unix/system.c` и `dlls/winemac.drv`. Исходники — исходники CrossOver 26.3
 (`https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz`,
 sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; локально `~/Games/src/cx.tar.gz`, распакованы в `~/Games/src/sources/wine`, ядро Wine 11.0).
 
@@ -14,7 +14,10 @@ sha256 `ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`; ло�
 | `ntdll/system.c`, `ntdll/original/system.c` | изменённый и исходный `dlls/ntdll/unix/system.c` |
 | `../patches/ntdll-firmware-tables.patch` | патч ntdll (ответ про ACPI-таблицы) |
 | `bin/ntdll.so`, `bin/ntdll.so.orig` | собранная unix-часть ntdll (x86_64, macOS 10.15+) и оригинал |
-| `configure-unix-command.txt` | configure для x86_64 unix-сборки (из `~/Games/src/build-x64`) |
+| `winemac.drv/*.c`, `winemac.drv/*.h`, `winemac.drv/*.m`, `winemac.drv/original/` | изменённые и исходные файлы драйвера macOS |
+| `../patches/winemac-focus.patch` | патч winemac (фокус окна игры, `WM_DISPLAYCHANGE` при активации) |
+| `bin/winemac.so`, `bin/winemac.so.orig` | собранный драйвер macOS (x86_64, macOS 10.15+, с MoltenVK) и оригинал |
+| `configure-unix-command.txt` | configure для x86_64 unix-сборки (из `~/Games/src/build-x64`); Vulkan через MoltenVK из `~/Games/cx/CrossOver/lib64` нужен для winemac.so |
 | `configure-command.txt` | команда configure (из каталога `~/Games/src/build`) |
 
 ## Восстановление с нуля
@@ -27,6 +30,7 @@ cp -R /Applications/CrossOver.app/Contents/SharedSupport/CrossOver ~/Games/cx/
 # установить готовые модули
 cp wine/bin/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x86_64-windows/ntoskrnl.exe
 cp wine/bin/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/ntdll.so
+cp wine/bin/winemac.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/winemac.so
 ```
 
 Пересборка из исходников:
@@ -56,8 +60,9 @@ cp dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x
 
 # Скрипты (`scripts/`)
 
-- `setup.sh` — подготовка Мака: бутылка, копия движка, ntoskrnl, переменные, настройки игры.
-- `build-ntoskrnl.sh [версия]` — пересборка ntoskrnl.exe и ntdll.so из исходников CrossOver.
+- `setup.sh` — подготовка Мака: бутылка, копия движка, ntoskrnl/ntdll/winemac, переменные,
+  клавиши и фокус окна в реестре, настройки игры.
+- `build-ntoskrnl.sh [версия]` — пересборка ntoskrnl.exe, ntdll.so и winemac.so из исходников CrossOver.
 - `start-allods.sh` — запуск GameCenter с патченым движком.
 - `run-wine-staging.sh` — обёртка Wine Staging 11.18 (пробный вариант, не используется).
 - `tools/*.swift` — мелкие утилиты окон macOS (позиция, клик, список окон), использовались при отладке.

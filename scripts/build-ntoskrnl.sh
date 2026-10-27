@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Rebuilds the patched ntoskrnl.exe and ntdll.so from CodeWeavers' CrossOver sources and installs
+# Rebuilds the patched ntoskrnl.exe, ntdll.so and winemac.so from CodeWeavers' CrossOver sources and installs
 # them into the engine copy in ~/Games/cx. Needs: brew install mingw-w64 bison
 set -e
 
@@ -17,6 +17,7 @@ if [[ ! -d sources/wine ]]; then
     tar xzf cx.tar.gz 'sources/wine/*'
     patch -d sources/wine -p1 < "$REPO/patches/ntoskrnl-impactdrv.patch"
     patch -d sources/wine -p1 < "$REPO/patches/ntdll-firmware-tables.patch"
+    patch -d sources/wine -p1 < "$REPO/patches/winemac-focus.patch"
 fi
 
 # Windows side (PE modules) and build tools, native arch
@@ -34,3 +35,6 @@ cd ../build-x64
 MACOSX_DEPLOYMENT_TARGET=10.15 PATH="/opt/homebrew/opt/bison/bin:$PATH" make -j"$(sysctl -n hw.ncpu)" dlls/ntdll/ntdll.so
 cp dlls/ntdll/ntdll.so "$LIB/x86_64-unix/ntdll.so"
 echo "Установлен $LIB/x86_64-unix/ntdll.so"
+MACOSX_DEPLOYMENT_TARGET=10.15 PATH="/opt/homebrew/opt/bison/bin:$PATH" make -j"$(sysctl -n hw.ncpu)" dlls/winemac.drv/winemac.so
+cp dlls/winemac.drv/winemac.so "$LIB/x86_64-unix/winemac.so"
+echo "Установлен $LIB/x86_64-unix/winemac.so"

@@ -21,7 +21,7 @@ fi
 
 cx_version=$(defaults read "$CX_APP/Contents/Info.plist" CFBundleShortVersionString)
 if [[ $cx_version != $EXPECTED_CX ]]; then
-    echo "CrossOver $cx_version, а готовые ntoskrnl.exe и ntdll.so собраны для $EXPECTED_CX." >&2
+    echo "CrossOver $cx_version, а готовые ntoskrnl.exe, ntdll.so и winemac.so собраны для $EXPECTED_CX." >&2
     echo "Пересоберите их: scripts/build-ntoskrnl.sh <версия> (исходники нужной версии CrossOver)." >&2
 fi
 
@@ -62,6 +62,26 @@ echo "ntoskrnl.exe установлен ($(md5 -q "$target"))"
 target="$CX_COPY/lib/wine/x86_64-unix/ntdll.so"
 cp "$REPO/wine/bin/ntdll.so" "$target"
 echo "ntdll.so установлен ($(md5 -q "$target"))"
+target="$CX_COPY/lib/wine/x86_64-unix/winemac.so"
+cp "$REPO/wine/bin/winemac.so" "$target"
+echo "winemac.so установлен ($(md5 -q "$target"))"
+
+echo "== Фокус окна игры"
+# The game crashes in the world when it becomes active again after another Mac app was in
+# front; with this it keeps the Windows foreground while macOS switches apps.
+reg_game() {
+    WINEPREFIX="$PREFIX" "$CX_COPY/bin/wine" --bottle "$BOTTLE" \
+        reg add 'HKCU\Software\Wine\AppDefaults\AOgame.exe\Mac Driver' /v $1 /t REG_SZ /d $2 /f >/dev/null 2>&1
+}
+reg_game KeepForegroundOnDeactivate y
+reg_game SyncDisplaysOnActivate n
+
+echo "== Клавиши: Cmd как Ctrl, Option как Alt"
+# By default Cmd is Alt; after Cmd+Tab the game never sees Alt released and crashes in the world.
+for key in LeftCommandIsCtrl RightCommandIsCtrl LeftOptionIsAlt RightOptionIsAlt; do
+    WINEPREFIX="$PREFIX" "$CX_COPY/bin/wine" --bottle "$BOTTLE" \
+        reg add 'HKCU\Software\Wine\Mac Driver' /v $key /t REG_SZ /d y /f >/dev/null 2>&1
+done
 
 echo "== Установщик VK Play GameCenter"
 if [[ ! -f $PREFIX/drive_c/users/crossover/AppData/Local/GameCenter/GameCenter.exe ]]; then

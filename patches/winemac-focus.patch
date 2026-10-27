@@ -1,0 +1,72 @@
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -44,6 +44,8 @@
+ 
+ int topmost_float_inactive = TOPMOST_FLOAT_INACTIVE_NONFULLSCREEN;
+ bool capture_displays_for_fullscreen = false;
++bool sync_displays_on_activate = true;
++bool keep_foreground_on_deactivate = false;
+ BOOL allow_vsync = TRUE;
+ BOOL allow_set_gamma = TRUE;
+ /* CrossOver Hack 10912: Mac Edit menu */
+@@ -326,6 +328,12 @@
+     if (!get_config_key(hkey, appkey, "CaptureDisplaysForFullscreen", buffer, sizeof(buffer)))
+         capture_displays_for_fullscreen = IS_OPTION_TRUE(buffer[0]);
+ 
++    if (!get_config_key(hkey, appkey, "SyncDisplaysOnActivate", buffer, sizeof(buffer)))
++        sync_displays_on_activate = IS_OPTION_TRUE(buffer[0]);
++
++    if (!get_config_key(hkey, appkey, "KeepForegroundOnDeactivate", buffer, sizeof(buffer)))
++        keep_foreground_on_deactivate = IS_OPTION_TRUE(buffer[0]);
++
+     if (!get_config_key(hkey, appkey, "AllowVerticalSync", buffer, sizeof(buffer)))
+         allow_vsync = IS_OPTION_TRUE(buffer[0]);
+ 
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -131,6 +131,8 @@
+ extern bool macdrv_err_on;
+ extern int topmost_float_inactive;
+ extern bool capture_displays_for_fullscreen;
++extern bool sync_displays_on_activate;
++extern bool keep_foreground_on_deactivate;
+ /* CrossOver Hack 10912: Mac Edit menu */
+ extern int mac_edit_menu;
+ extern bool left_option_is_alt;
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -2458,8 +2458,10 @@
+         //
+         // To solve this, we synthesize a displays-changed event whenever we're
+         // activated.  This will provoke a re-synchronization of Wine's notion of
+-        // the desktop rect with the actual state.
+-        [self sendDisplaysChanged:TRUE];
++        // the desktop rect with the actual state.  Some games can't cope with the
++        // resulting WM_DISPLAYCHANGE, so this can be turned off.
++        if (sync_displays_on_activate)
++            [self sendDisplaysChanged:TRUE];
+ 
+         // The cursor probably moved while we were inactive.  Accumulated mouse
+         // movement deltas are invalidated.  Make sure the next mouse move event
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1869,6 +1869,10 @@
+ 
+     TRACE("win %p/%p fg %p\n", hwnd, event->window, NtUserGetForegroundWindow());
+ 
++    /* Some games crash when they become active again, so let them keep the foreground
++       while another Mac app is in front. */
++    if (keep_foreground_on_deactivate) return;
++
+     if (hwnd == NtUserGetForegroundWindow())
+     {
+         send_message(hwnd, WM_CANCELMODE, 0, 0);
+@@ -1899,6 +1903,8 @@
+ {
+     NtUserClipCursor(NULL);
+ 
++    if (keep_foreground_on_deactivate) return;
++
+     if (get_active_window() == NtUserGetForegroundWindow())
+     {
+         TRACE("setting fg to desktop\n");

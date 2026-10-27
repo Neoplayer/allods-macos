@@ -63,6 +63,12 @@ scripts/start-allods.sh
   путь `C:\VK Play\Аллоды Онлайн\Personal` превращается в `?????? ??????`, и появляется
   «Couldn't create crash report directory».
 
+Клавиатура (реестр бутылки, `HKCU\Software\Wine\Mac Driver`): `LeftCommandIsCtrl`,
+`RightCommandIsCtrl`, `LeftOptionIsAlt`, `RightOptionIsAlt` = `y`. Cmd работает как Ctrl,
+Option как Alt. По умолчанию CrossOver отдаёт Cmd как Alt; после Cmd+Tab игра не получает
+отпускание Alt (ошибка Wine 48512). Падение при Cmd+Tab это не исправило (см. «Фокус окна»),
+но раскладка оставлена: Alt на Option не залипает при переключении приложений.
+
 Настройки игры (`C:\VK Play\Аллоды Онлайн\Personal\global.cfg`): `gfx_antialias=0`.
 С MSAA wined3d не создаёт depth/stencil-поверхность (`D3DERR_NOTAVAILABLE`) — белый экран.
 Оригинал конфига: `~/Games/src/global.cfg.orig`.
@@ -96,6 +102,21 @@ scripts/start-allods.sh
 Теперь он отвечает правду: у Apple Silicon ACPI-таблиц нет — пустой список, а на запрос конкретной
 таблицы «не найдена», как Windows для отсутствующей таблицы. Таблицы не подделываются.
 
+## Что исправлено в winemac.drv (Wine)
+
+Игра падала в мире (не в меню), когда снова становилась активной после Cmd+Tab или свайпа:
+`ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по адресу `0x140B8CAC4`, в первом кадре после
+`WM_ACTIVATEAPP`, ещё до ввода. Код игры зашифрован, сама причина внутри игры не установлена.
+
+`patches/winemac-focus.patch` добавляет драйверу macOS две настройки, обе включены только для
+`AOgame.exe` (`HKCU\Software\Wine\AppDefaults\AOgame.exe\Mac Driver`):
+- `KeepForegroundOnDeactivate=y` — когда впереди другое приложение macOS, окно игры остаётся
+  активным для Windows: игра не получает потерю и возврат фокуса и не идёт в падающий код.
+  Курсор при переключении всё равно освобождается. Игра продолжает рисовать в фоне.
+- `SyncDisplaysOnActivate=n` — не посылать `WM_DISPLAYCHANGE` при каждой активации приложения.
+
+Проверено 27.10: в мире несколько Cmd+Tab и свайпов — игра не падает.
+
 ## Что видит античит о машине
 
 Ничего не скрывается и не подделывается:
@@ -113,6 +134,8 @@ cp ~/Games/src/build/dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/Cr
 # ntdll.so — отдельная x86_64-сборка (CrossOver работает под Rosetta), см. wine/configure-unix-command.txt
 MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/ntdll/ntdll.so
 cp ~/Games/src/build-x64/dlls/ntdll/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/
+MACOSX_DEPLOYMENT_TARGET=10.15 make -C ~/Games/src/build-x64 dlls/winemac.drv/winemac.so
+cp ~/Games/src/build-x64/dlls/winemac.drv/winemac.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/
 ```
 
 Или всё сразу: `scripts/build-ntoskrnl.sh`.
@@ -133,11 +156,9 @@ cp ~/Games/src/build-x64/dlls/ntdll/ntdll.so ~/Games/cx/CrossOver/lib/wine/x86_6
 
 ## Известные проблемы
 
-- **Игра падает при Alt+Tab** (проверено: без Alt+Tab работает, после — падение):
-  `ACCESS_VIOLATION` (чтение NULL) в `AOgame.exe` по адресу `0x140B8CAC4`. Иногда перед этим
-  `wined3d_swapchain_resize_buffers: Something's still holding back buffer 0`. Не помогли:
-  обычное окно вместо окна без рамки (`gfxBorderless=0`), виртуальный рабочий стол Wine.
-  Код игры зашифрован, причина не установлена. Пока не нажимать Alt+Tab в игре. wined3d рисует через OpenGL macOS, которому не хватает части расширений
+- Падение при Cmd+Tab обойдено настройкой драйвера (см. «Что исправлено в winemac.drv»).
+  Без неё не помогали: окно с рамкой (`gfxBorderless=0`), виртуальный рабочий стол Wine,
+  Cmd как Ctrl. wined3d рисует через OpenGL macOS, которому не хватает части расширений
   (`GL_ARB_uniform_buffer_object`, `GL_EXT_texture_array`), и представляется GeForce 8800 GTX.
   Crash-отчёты игры: `C:\VK Play\Аллоды Онлайн\Personal\CrashReports\`.
 - `bin_dx9\AOgame_d3d9.log` — лог DXVK, если включён.
