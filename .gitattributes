@@ -1,3 +1,2 @@
 config/game/* -text
-logs/* -text
 wine/bin/* binary

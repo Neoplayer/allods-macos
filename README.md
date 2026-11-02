@@ -1,14 +1,67 @@
-# Аллоды Онлайн на macOS (Apple M4 Pro, macOS 26.5)
+<div align="center">
 
-Состояние на 27.10.2026: игра запускается из VK Play GameCenter, вход в мир и игра работают,
-переключение приложений (Cmd+Tab, свайп) не роняет игру. Клиент RU, build 623, DirectX 11 через
-DXMT, 55–70 FPS на главной площади.
+# Аллоды Онлайн на macOS
+
+**Аллоды Онлайн с античитом Astrum на Apple Silicon — через CrossOver и патченый Wine**
+
+[![macOS](https://img.shields.io/badge/macOS-26.5-000000?logo=apple&logoColor=white)](#)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M4%20Pro-555555?logo=apple&logoColor=white)](#)
+[![CrossOver](https://img.shields.io/badge/CrossOver-26.3-c41e3a)](https://www.codeweavers.com/crossover)
+[![Wine](https://img.shields.io/badge/Wine-11.0-722f37?logo=wine&logoColor=white)](https://www.winehq.org)
+[![D3D11](https://img.shields.io/badge/D3D11-DXMT%20%E2%86%92%20Metal-1f6feb)](https://github.com/3Shain/dxmt)
+[![FPS](https://img.shields.io/badge/FPS-55%E2%80%9370-2ea44f)](#настройки)
+[![License](https://img.shields.io/badge/license-MIT%20%2B%20LGPL--2.1-blue)](LICENSE)
+
+</div>
+
+> Состояние на 27.10.2026: игра запускается из VK Play GameCenter, вход в мир и игра работают,
+> переключение приложений (Cmd+Tab, свайп) не роняет игру. Клиент RU, build 623, DirectX 11 через
+> DXMT, 55–70 FPS на главной площади.
+
+> [!WARNING]
+> Неофициальный проект, никак не связан с Astrum Entertainment, VK Play и CodeWeavers.
+> Патчи только дописывают в Wine недостающие функции ядра Windows, чтобы античит мог
+> запуститься; игру и античит они не модифицируют. Используйте на свой риск.
+
+## Содержание
+
+- [Быстрый старт](#быстрый-старт)
+- [Как это работает](#как-это-работает)
+- [Установка на новом Маке](#установка-на-новом-маке-apple-silicon)
+- [Запуск](#запуск)
+- [Компоненты](#компоненты) · [Настройки](#настройки)
+- Изменения в Wine: [ntoskrnl.exe](#ntoskrnlexe) · [ntdll](#ntdll) · [winemac.drv](#winemacdrv)
+- [Сборка и установка после правок](#сборка-и-установка-после-правок)
+- [Логи](#логи) · [Ограничения](#ограничения) · [Структура репозитория](#структура-репозитория) · [Лицензия](#лицензия)
+
+## Быстрый старт
+
+```bash
+git clone https://github.com/Neoplayer/allods-macos.git
+cd allods-macos
+scripts/setup.sh          # бутылка, копия движка CrossOver, патченые модули
+# установить GameCenter и игру командой, которую напечатает setup.sh
+scripts/start-allods.sh   # запуск
+```
+
+Подробно — в разделе [«Установка на новом Маке»](#установка-на-новом-маке-apple-silicon).
+
+## Как это работает
+
+| Проблема | Что исправлено | Где |
+|---|---|---|
+| Драйвер античита `impactdrv` падает в эмуляции ядра Wine | Реализованы MDL/память, хэндлы и потоки клиента, `gs:[0x188]`, имперсонация, уведомления о процессах | [`ntoskrnl.exe`](#ntoskrnlexe) |
+| Античит получает `STATUS_NOT_IMPLEMENTED` на запросы ACPI и `PlatformRole` | Честные ответы: ACPI-таблиц нет, платформа мобильная | [`ntdll`](#ntdll) |
+| Игра падает в мире после Cmd+Tab или свайпа | Окно игры не теряет фокус Windows при переключении приложений macOS | [`winemac.drv`](#winemacdrv) |
+| Мерцание и низкий FPS в D3D11 | DXMT (D3D11 → Metal) + MSync, исправлен rpath unix-модулей | [Настройки](#настройки) |
+
+Все изменения — в копии движка CrossOver в `~/Games/cx`; сам `CrossOver.app` не трогается.
 
 ## Установка на новом Маке (Apple Silicon)
 
 1. Установить [CrossOver 26.3](https://www.codeweavers.com/crossover) в `/Applications`.
    Готовые модули в `wine/bin/` собраны под 26.3; для другой версии — шаг 6.
-2. Скопировать эту папку на Мак и запустить:
+2. Склонировать репозиторий и запустить:
 
    ```bash
    scripts/setup.sh
@@ -216,3 +269,20 @@ CrossOver молча игнорирует `CX_GRAPHICS_BACKEND`: D3D11 рису�
   о шейдерах.
 - Трассы отладки не хранить в репозитории: писать во временную папку (например `~/Games/trace`)
   через `wine --debugmsg <каналы> --cx-log <файл>` и удалять после разбора.
+
+## Структура репозитория
+
+```
+.
+├── config/        конфиги бутылки CrossOver и игры (+ .orig — до изменений)
+├── patches/       патчи к исходникам CrossOver 26.3 (git apply)
+├── scripts/       setup.sh, start-allods.sh, build-ntoskrnl.sh
+└── wine/          изменённые исходники Wine, оригиналы и собранные модули (bin/)
+```
+
+Подробное описание файлов — [`wine/README.md`](wine/README.md).
+
+## Лицензия
+
+Скрипты, конфиги и документация — [MIT](LICENSE). Патчи, исходники и собранные модули Wine
+в `patches/` и `wine/` — [LGPL-2.1-or-later](wine/COPYING.LIB), как и сам Wine.

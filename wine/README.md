@@ -37,9 +37,10 @@ cp wine/bin/winemac.so ~/Games/cx/CrossOver/lib/wine/x86_64-unix/winemac.so
 Пересборка из исходников:
 
 ```bash
-cd ~/Games/src/sources/wine && git apply /Users/neerd/Projects/Allods/patches/ntoskrnl-impactdrv.patch
+REPO=$(pwd)   # корень клона allods-macos
+cd ~/Games/src/sources/wine && git apply "$REPO"/patches/ntoskrnl-impactdrv.patch
 mkdir -p ~/Games/src/build && cd ~/Games/src/build
-$(cat /Users/neerd/Projects/Allods/wine/configure-command.txt)
+$(cat "$REPO"/wine/configure-command.txt)
 make dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe
 cp dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x86_64-windows/
 ```
@@ -53,12 +54,6 @@ cp dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x
 - `game/global.cfg` — настройки игры (`gfx_antialias=0`, 1920×1080 @60); `global.cfg.orig` —
   как игра создала сама. Кладётся в `C:\VK Play\Аллоды Онлайн\Personal\`.
 
-# Логи (`logs/`)
-
-- `impactdiag.log` — диагностика античита за все попытки (коды отказов `150029`).
-- `gamecenter-anticheat.log` — строки о запуске игры и античите из `GameCenter\main.log`,
-  токены и id аккаунта вырезаны.
-
 # Скрипты (`scripts/`)
 
 - `setup.sh` — подготовка Мака: бутылка, копия движка, ntoskrnl/ntdll/winemac, переменные,
@@ -66,4 +61,8 @@ cp dlls/ntoskrnl.exe/x86_64-windows/ntoskrnl.exe ~/Games/cx/CrossOver/lib/wine/x
 - `build-ntoskrnl.sh [версия]` — пересборка ntoskrnl.exe, ntdll.so и winemac.so из исходников CrossOver.
 - `start-allods.sh` — запуск GameCenter с патченым движком.
 - `run-wine-staging.sh` — обёртка Wine Staging 11.18 (пробный вариант, не используется).
-- `tools/*.swift` — мелкие утилиты окон macOS (позиция, клик, список окон), использовались при отладке.
+
+# Лицензия
+
+Файлы этой папки и `patches/` получены из Wine/CrossOver и распространяются под
+LGPL-2.1-or-later, текст — [`COPYING.LIB`](COPYING.LIB).
